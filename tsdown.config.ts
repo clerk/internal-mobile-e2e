@@ -11,14 +11,13 @@ const hash = createHash('sha256');
 for (const file of sources) hash.update(file).update('\0').update(readFileSync(file)).update('\0');
 writeFileSync('src/core/version.json', `${JSON.stringify({ version: hash.digest('hex') })}\n`);
 
-const { exports: exportsMap } = JSON.parse(readFileSync('package.json', 'utf8')) as {
-  exports: Record<string, { import: string }>;
-};
+const testingHelpers = ['testing/git-env.ts', 'testing/sample-inputs.ts', 'testing/seam.ts'];
 const entry = Object.fromEntries(
-  Object.values(exportsMap)
-    .map((value) => value.import.replace('./dist/', '').replace(/\.js$/, ''))
-    .filter((file) => !file.endsWith('.mjs'))
-    .map((file) => [file, `${file}.ts`]),
+  ['src', 'specs']
+    .flatMap((root) => readdirSync(root, { recursive: true, encoding: 'utf8' }).map((file) => `${root}/${file}`))
+    .filter((file) => file.endsWith('.ts') && !file.endsWith('.mts'))
+    .concat(testingHelpers)
+    .map((file) => [file.slice(0, -'.ts'.length), file]),
 );
 
 export default defineConfig({
