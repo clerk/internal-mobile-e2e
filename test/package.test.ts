@@ -1,7 +1,7 @@
 import '../testing/git-env.ts';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { it } from 'node:test';
 import { coreVersion } from '../src/core/version.ts';
@@ -13,8 +13,17 @@ it('loads every built export and ships its declaration without TypeScript stripp
     name: string;
     exports: Record<string, { types: string; import: string }>;
   };
-  for (const [key, target] of Object.entries(pkg.exports)) {
-    assert.ok(existsSync(join(root, target.types)), target.types);
+  const subpaths = Object.entries(pkg.exports).flatMap(([key, target]) => {
+    if (!key.endsWith('/*')) return [{ key, types: target.types }];
+    const dir = target.import.slice(0, -'*.js'.length);
+    return readdirSync(join(root, dir), { recursive: true, encoding: 'utf8' })
+      .filter((file) => file.endsWith('.js'))
+      .map((file) => ({ key: `${key.slice(0, -1)}${file.slice(0, -'.js'.length)}`, types: `${dir}${file.slice(0, -'.js'.length)}.d.ts` }))
+      .filter(({ key: subpath }) => !(subpath in pkg.exports));
+  });
+  assert.ok(subpaths.length > 50, `found ${subpaths.length} subpaths`);
+  for (const { key, types } of subpaths) {
+    assert.ok(existsSync(join(root, types)), types);
     await import(`${pkg.name}${key === '.' ? '' : key.slice(1)}`);
   }
   const built = await import('@clerk/internal-mobile-e2e/core/version');
