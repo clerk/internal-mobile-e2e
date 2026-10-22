@@ -225,7 +225,22 @@
     "./core/launch": {
       "types": "./dist/src/core/launch.d.mts",
       "import": "./dist/src/core/launch.mjs"
+    },
+    "./testing/git-env": {
+      "types": "./dist/testing/git-env.d.ts",
+      "import": "./dist/testing/git-env.js"
+    },
+    "./testing/sample-inputs": {
+      "types": "./dist/testing/sample-inputs.d.ts",
+      "import": "./dist/testing/sample-inputs.js"
+    },
+    "./testing/seam": {
+      "types": "./dist/testing/seam.d.ts",
+      "import": "./dist/testing/seam.js"
     }
+  },
+  "bin": {
+    "internal-mobile-e2e-session-agent": "./dist/src/core/remote/session-agent.js"
   },
   "files": [
     "dist"

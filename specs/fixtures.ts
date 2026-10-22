@@ -26,6 +26,7 @@ import {
 import { errorScreenElseSavePasswordPrompt, onScreen, signedInAs, signedOut, until, untilVisible, type Sight, type WaitPace, type WaitScreen } from './support/waiting.ts';
 
 export { expect, CLERK_TEST_CODE };
+export type { Locator };
 
 const LAUNCH_TIMEOUT_MS = 60_000;
 const POLL_MS = 400;
