@@ -415,12 +415,17 @@ describe('session agent', () => {
     const added = workingPatch(client, ['.'])!;
     rmSync(join(client, 'e2e-tests'), { recursive: true });
     execFileSync('git', ['checkout', '-q', '--', 'app.txt'], { cwd: client });
+    mkdirSync(join(client, 'SourcesX'));
+    writeFileSync(join(client, 'SourcesX', 'Recipe.swift'), 'a new file beside the app sources');
+    const sibling = workingPatch(client, ['.'])!;
+    rmSync(join(client, 'SourcesX'), { recursive: true });
+    execFileSync('git', ['checkout', '-q', '--', 'app.txt'], { cwd: client });
     execFileSync('git', ['mv', 'outside.txt', 'extra.txt'], { cwd: client });
     const renamedBytes = execFileSync('git', ['diff', '--cached', '--binary', '-M', 'HEAD'], { cwd: client });
     const renamed: TreePatch = { sha256: createHash('sha256').update(renamedBytes).digest('hex'), bytes: renamedBytes };
     assert.match(renamedBytes.toString(), /^rename from outside\.txt$/m, 'git writes the rename source without the patch naming it as a file');
 
-    for (const [patch, path] of [[added, 'e2e-tests/recipe.ts'], [renamed, 'outside.txt']] as const) {
+    for (const [patch, path] of [[added, 'e2e-tests/recipe.ts'], [sibling, 'SourcesX/Recipe.swift'], [renamed, 'outside.txt']] as const) {
       assert.equal((await send(patch)).status, 202);
       const refused = await settled(patch.sha256);
       assert.equal(refused.state, 'failed', path);
