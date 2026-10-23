@@ -51,15 +51,11 @@ export function mediaTables(files: readonly string[], hasBefore: boolean, upload
   const shown = files.map((name, at) => {
     const label = stem(name);
     const cell = (url: string, alt: string): string => (isVideo(name) ? url : `<img src="${url}" width="${IMAGE_WIDTH}" alt="${alt}">`);
-    return { video: isVideo(name), label, after: cell(uploaded[at]!, hasBefore ? `After: ${label}` : label), before: hasBefore ? cell(uploaded[files.length + at]!, `Before: ${label}`) : '' };
+    return { label, after: cell(uploaded[at]!, hasBefore ? `After: ${label}` : label), before: hasBefore ? cell(uploaded[files.length + at]!, `Before: ${label}`) : '' };
   });
-  return [false, true].flatMap((video) => {
-    const some = shown.filter((item) => item.video === video);
-    if (some.length === 0) return [];
-    if (hasBefore) return [table(['Before', 'After'], some.map((item) => [item.before, item.after]))];
-    const rows = Array.from({ length: Math.ceil(some.length / ACROSS) }, (_, row) => some.slice(row * ACROSS, (row + 1) * ACROSS));
-    return rows.map((row) => table(row.map((item) => `\`${item.label}\``), [row.map((item) => item.after)]));
-  });
+  if (hasBefore) return [table(['Before', 'After'], shown.map((item) => [item.before, item.after]))];
+  const rows = Array.from({ length: Math.ceil(shown.length / ACROSS) }, (_, row) => shown.slice(row * ACROSS, (row + 1) * ACROSS));
+  return rows.map((row) => table(row.map((item) => `\`${item.label}\``), [row.map((item) => item.after)]));
 }
 
 export class CannotPostHere extends VerifyFailure {
@@ -143,11 +139,11 @@ export function chooseEvidence(pr: number, evidence: Publishable, before: Showab
   const missing = (what: string, fix: string): never => {
     throw new VerifyFailure('USAGE', what, fix);
   };
-  const shots = media.screenshots.map(
+  const shots = (media.kind === 'screenshots' ? media.labels : []).map(
     (label) => evidence.screenshots.find((s) => s.label === label) ?? missing(`run ${evidence.run} has no screenshot labelled ${label}`, `use one of: ${evidence.screenshots.map((s) => s.label).join(', ') || '(none)'}`),
   );
   const noVideo = (run: string): string => `run ${run} has no video: a run records one from the first time a test launches the app, unless it has --no-video`;
-  const video = media.video ? [evidence.videos[0] ?? missing(noVideo(evidence.run), '{cli} run a spec that calls host.launch, without --no-video, and attach that run, or attach this one with --screenshot <label>')] : [];
+  const video = media.kind === 'video' ? [evidence.videos[0] ?? missing(noVideo(evidence.run), '{cli} run a spec that calls host.launch, without --no-video, and attach that run, or attach this one with --screenshot <label>')] : [];
   const files = [...shots.map((shot) => shot.path), ...video].map((path) => ({ name: basename(path), path }));
   const summary = summarize(evidence);
   if (before === null) return { pr, summary, files, before: null };

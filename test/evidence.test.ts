@@ -384,8 +384,8 @@ describe('attach', () => {
   }
 
   const block = (...lines: readonly string[]): string => [`${DESCRIPTION}`, '<!-- verify-evidence:ios -->', '', ...lines, '', '<!-- /verify-evidence:ios -->'].join('\n');
-  const still = { screenshots: ['profile'], video: false };
-  const flow = { screenshots: [], video: true };
+  const still = { kind: 'screenshots', labels: ['profile'] } as const;
+  const flow = { kind: 'video' } as const;
 
   it('never calls gh for a run that fails the gate', async () => {
     const calls: string[] = [];
@@ -430,7 +430,7 @@ describe('attach', () => {
     const gh = fakeGh();
     const { deps, sealed } = checkout(gh);
     const { run } = sealed({ called: 'after', shots: ['start', 'profile', 'security'] });
-    await attach(deps, { verb: 'attach', run, pr: 9, media: { screenshots: ['start', 'profile', 'security'], video: false }, before: null });
+    await attach(deps, { verb: 'attach', run, pr: 9, media: { kind: 'screenshots', labels: ['start', 'profile', 'security'] }, before: null });
     assert.equal(
       gh.pr.body,
       block(
@@ -508,52 +508,12 @@ describe('attach', () => {
     assert.deepEqual(gh.edits, []);
   });
 
-  it('shows both kinds when asked for both: the screenshots first, then the video, each laid out as it is alone', async () => {
-    const gh = fakeGh();
-    const { deps, sealed } = checkout(gh);
-    const before = sealed({ called: 'before', failed: true });
-    const after = sealed({ called: 'after' });
-    const both = { screenshots: ['profile'], video: true };
-    await attach(deps, { verb: 'attach', run: after.run, pr: 9, media: both, before: before.run });
-    assert.equal(
-      gh.pr.body,
-      block(
-        `**Verified on an iOS simulator.** Run \`${after.run}\` on \`verify-ios-1\` at \`606639a63448\`, 1 of 1 passed. Before is run \`${before.run}\` at \`5e1263750651\`, 0 of 1 passed.`,
-        '',
-        '| Before | After |',
-        '| :---: | :---: |',
-        `| <img src="${asset(3)}" width="280" alt="Before: profile"> | <img src="${asset(1)}" width="280" alt="After: profile"> |`,
-        '',
-        '| Before | After |',
-        '| :---: | :---: |',
-        `| ${asset(4)} | ${asset(2)} |`,
-      ),
-    );
-    assert.deepEqual(gh.edits[0]!.attached, ['after profile', 'after video', 'before profile', 'before video']);
-
-    await attach(deps, { verb: 'attach', run: after.run, pr: 9, media: both, before: null });
-    assert.equal(
-      gh.pr.body,
-      block(
-        `**Verified on an iOS simulator.** Run \`${after.run}\` on \`verify-ios-1\` at \`606639a63448\`, 1 of 1 passed.`,
-        '',
-        '| `profile` |',
-        '| :---: |',
-        `| <img src="${asset(5)}" width="280" alt="profile"> |`,
-        '',
-        '| `video` |',
-        '| :---: |',
-        `| ${asset(6)} |`,
-      ),
-    );
-  });
-
   it('pairs a screenshot with the one of the same label in the before run, and with the failure screenshot of a before run that failed before it took one', async () => {
     const gh = fakeGh();
     const { deps, sealed } = checkout(gh);
     const before = sealed({ called: 'before', failed: true, failureShot: true, shots: ['start'] });
     const after = sealed({ called: 'after', shots: ['start', 'profile'] });
-    await attach(deps, { verb: 'attach', run: after.run, pr: 9, media: { screenshots: ['start', 'profile'], video: false }, before: before.run });
+    await attach(deps, { verb: 'attach', run: after.run, pr: 9, media: { kind: 'screenshots', labels: ['start', 'profile'] }, before: before.run });
     assert.deepEqual(gh.edits[0]!.attached, ['after start', 'after profile', 'before start', 'before failure']);
     assert.deepEqual(gh.pr.body.split('\n').slice(10, 12), [
       `| <img src="${asset(3)}" width="280" alt="Before: start"> | <img src="${asset(1)}" width="280" alt="After: start"> |`,
@@ -566,7 +526,7 @@ describe('attach', () => {
     const { deps, sealed } = checkout(gh);
     const before = sealed({ called: 'before', failed: true, states: ['start', 'profile'], shots: [], spec: 'specs/explored/states.e2e.ts' });
     const after = sealed({ called: 'after', states: ['start', 'profile'], spec: 'specs/features/profile/states.e2e.ts' });
-    await attach(deps, { verb: 'attach', run: after.run, pr: 9, media: { screenshots: ['start', 'profile'], video: false }, before: before.run });
+    await attach(deps, { verb: 'attach', run: after.run, pr: 9, media: { kind: 'screenshots', labels: ['start', 'profile'] }, before: before.run });
     assert.deepEqual(gh.edits[0]!.attached, ['after start', 'after profile', 'before start failure', 'before profile failure']);
   });
 
@@ -668,21 +628,21 @@ describe('attach', () => {
     const gh = fakeGh();
     const { deps, sealed } = checkout(gh);
     const { run, dir } = sealed({ called: 'after' });
-    const result = await attach(deps, { verb: 'attach', run, pr: 9, media: { screenshots: ['profile'], video: true }, before: null });
+    const result = await attach(deps, { verb: 'attach', run, pr: 9, media: still, before: null });
     const [upload, layout] = gh.edits;
     assert.equal(gh.edits.length, 2);
     assert.deepEqual(upload!.args.slice(0, 5), ['pr', 'edit', '9', '--repo', 'clerk/clerk-ios']);
     const names = upload!.args.filter((_, i) => upload!.args[i - 1] === '--attach');
     const prefix = /^\.\/(evidence-[0-9a-f]{16})-1\.png$/.exec(names[0]!)?.[1];
-    assert.deepEqual(names, [`./${prefix}-1.png`, `./${prefix}-2.mp4`]);
+    assert.deepEqual(names, [`./${prefix}-1.png`]);
     assert.equal(
       upload!.bodyFile,
-      block(`**Verified on an iOS simulator.** Run \`${run}\` on \`verify-ios-1\` at \`606639a63448\`, 1 of 1 passed.`, '', `![profile](./${prefix}-1.png)`, '', `![video.mp4](./${prefix}-2.mp4)`),
+      block(`**Verified on an iOS simulator.** Run \`${run}\` on \`verify-ios-1\` at \`606639a63448\`, 1 of 1 passed.`, '', `![profile](./${prefix}-1.png)`),
     );
     assert.equal(layout!.args.includes('--attach'), false);
     assert.equal(layout!.bodyFile, gh.pr.body);
     assert.equal(existsSync(upload!.cwd!), false, 'the copies of the files and of the description are not kept');
-    assert.deepEqual(result, { verb: 'attach', via: 'gh', prUrl: PR_URL, posted: [join(dir, 'screenshots', 'profile.png'), join(dir, 'video.mp4')], alreadyPosted: false });
+    assert.deepEqual(result, { verb: 'attach', via: 'gh', prUrl: PR_URL, posted: [join(dir, 'screenshots', 'profile.png')], alreadyPosted: false });
   });
 
   it('leaves the list in the description and says so when the addresses of the files cannot be read back, or the block names another run by then', async () => {
@@ -706,7 +666,7 @@ describe('attach', () => {
     assert.ok(otherRun.pr.body.endsWith(`Run \`r20261009-020202-bbbb\` on \`verify-ios-1\` at \`606639a63448\`, 1 of 1 passed.\n\n![profile](${asset(1)})\n\n<!-- /verify-evidence:ios -->`), 'the list that names another run is left as it is');
   });
 
-  it('says already posted for a repeated attach with a before run, with screenshots alone and with a video too', async () => {
+  it('says already posted for a repeated attach with a before run, with screenshots and with a video', async () => {
     const gh = fakeGh();
     const { deps, sealed } = checkout(gh);
     const before = sealed({ called: 'before', failed: true });
@@ -717,10 +677,10 @@ describe('attach', () => {
     assert.deepEqual(await pair(), { ...first, alreadyPosted: true });
     assert.equal(gh.edits.length, 2);
 
-    const both = () => attach(deps, { verb: 'attach', run, pr: 9, media: { screenshots: ['profile'], video: true }, before: before.run });
-    const withVideo = await both();
+    const video = () => attach(deps, { verb: 'attach', run, pr: 9, media: flow, before: before.run });
+    const withVideo = await video();
     assert.equal(gh.edits.length, 4);
-    assert.deepEqual(await both(), { ...withVideo, alreadyPosted: true });
+    assert.deepEqual(await video(), { ...withVideo, alreadyPosted: true });
     assert.equal(gh.edits.length, 4);
   });
 

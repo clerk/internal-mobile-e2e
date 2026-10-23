@@ -660,7 +660,7 @@ export async function attach(deps: Deps, command: Extract<Command, { verb: 'atta
   if (!existsSync(dir)) throw new VerifyFailure('USAGE', `no run ${run} in ${deps.workspace.root}/runs`, 'pass a run id that `{cli} run` printed');
   const record = readRecord(dir);
   const publishable = assertPublishable(record, loggedUserIds(dir));
-  if (command.media.video && (record.evidenceSpans ?? []).length === 0) {
+  if (command.media.kind === 'video' && (record.evidenceSpans ?? []).length === 0) {
     throw new VerifyFailure(
       'USAGE',
       `run ${run} marks no part of its video as the change, so its video would show the whole run`,
@@ -669,7 +669,7 @@ export async function attach(deps: Deps, command: Extract<Command, { verb: 'atta
   }
   const before = command.before === null ? null : beforeRun(deps, command.before, record);
   const chosen = chooseEvidence(command.pr, publishable, before, command.media);
-  const bundle = command.media.video ? await withCutVideos(deps, chosen, record, before) : chosen;
+  const bundle = command.media.kind === 'video' ? await withCutVideos(deps, chosen, record, before) : chosen;
   try {
     return await postToPullRequest(bundle, deps.host, deps.runner);
   } catch (error) {

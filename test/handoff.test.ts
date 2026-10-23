@@ -381,12 +381,12 @@ function remoteRun(options: { readonly backend?: EvidenceRecord['backend']; read
   return { deps, run, dir, bundles, ghCalls };
 }
 
-const BOTH = { screenshots: ['profile'], video: true };
+const STILL = { kind: 'screenshots', labels: ['profile'] } as const;
 
 describe('attach on a machine whose gh cannot attach', () => {
   it('hands the sealed files of a borrowed-device run to the session, and says what happens next', async () => {
     const { deps, run, dir, bundles, ghCalls } = remoteRun();
-    const result = await attach(deps, { verb: 'attach', run, pr: 669, media: BOTH, before: null });
+    const result = await attach(deps, { verb: 'attach', run, pr: 669, media: STILL, before: null });
     assert.deepEqual(ghCalls, ['pr edit --help'], 'gh was asked first, and it cannot attach');
     assert.deepEqual(bundles, [
       {
@@ -394,7 +394,6 @@ describe('attach on a machine whose gh cannot attach', () => {
         summary: { run, platform: 'ios', device: 'iPhone Air on xcode-27', commit: COMMIT, passed: 1, flaky: 0, total: 1 },
         files: [
           { name: 'profile.png', path: join(dir, 'screenshots', 'profile.png') },
-          { name: 'video.mp4', path: join(dir, 'video.mp4') },
         ],
         before: null,
       },
@@ -403,7 +402,7 @@ describe('attach on a machine whose gh cannot attach', () => {
       verb: 'attach',
       via: 'runner',
       pr: 669,
-      handedOff: [join(dir, 'screenshots', 'profile.png'), join(dir, 'video.mp4')],
+      handedOff: [join(dir, 'screenshots', 'profile.png')],
       because: 'this gh has no `gh pr edit --attach`',
       sessionRun: '37731397352',
       sessionRunUrl: 'https://github.com/clerk/clerk-ios/actions/runs/37731397352',
@@ -411,7 +410,7 @@ describe('attach on a machine whose gh cannot attach', () => {
     let out = '';
     createOutput(false, '/tmp', 'bin/control-x', { write: (text: string) => (out += text) }, { write: () => true }).result(result);
     assert.deepEqual(out.trimEnd().split('\n'), [
-      "handed off  profile.png, video.mp4  to the session's runner (https://github.com/clerk/clerk-ios/actions/runs/37731397352), because this gh has no `gh pr edit --attach`",
+      "handed off  profile.png  to the session's runner (https://github.com/clerk/clerk-ios/actions/runs/37731397352), because this gh has no `gh pr edit --attach`",
       'next        bin/control-x down ends the session; the verify-attach workflow then puts the evidence in the description of PR #669',
     ]);
   });
@@ -430,8 +429,8 @@ describe('attach on a machine whose gh cannot attach', () => {
       return { code: 0, stdout: 'https://github.com/clerk/clerk-ios/pull/669\n', stderr: '' };
     };
     const { deps, run, dir, bundles, ghCalls } = remoteRun({ gh });
-    const result = await attach(deps, { verb: 'attach', run, pr: 669, media: BOTH, before: null });
-    assert.deepEqual(result, { verb: 'attach', via: 'gh', prUrl: 'https://github.com/clerk/clerk-ios/pull/669', posted: [join(dir, 'screenshots', 'profile.png'), join(dir, 'video.mp4')], alreadyPosted: false });
+    const result = await attach(deps, { verb: 'attach', run, pr: 669, media: STILL, before: null });
+    assert.deepEqual(result, { verb: 'attach', via: 'gh', prUrl: 'https://github.com/clerk/clerk-ios/pull/669', posted: [join(dir, 'screenshots', 'profile.png')], alreadyPosted: false });
     assert.deepEqual(ghCalls, ['pr edit --help', 'pr view 669', 'pr view 669', 'pr edit --attach', 'pr view 669', 'pr edit --attach']);
     assert.deepEqual(bundles, [], 'nothing went to the session');
   });
@@ -443,7 +442,7 @@ describe('attach on a machine whose gh cannot attach', () => {
       gh: (args) => (order.push(args.includes('--attach') ? 'gh pr edit --attach' : 'gh'), refusedUpload(args)),
       handOff: async () => (order.push('hand-off'), { sessionRun: '1', sessionRunUrl: 'https://github.com/clerk/clerk-ios/actions/runs/1' }),
     });
-    const result = await attach(deps, { verb: 'attach', run, pr: 669, media: BOTH, before: null });
+    const result = await attach(deps, { verb: 'attach', run, pr: 669, media: STILL, before: null });
     assert.equal(result.via === 'runner' && result.because, 'gh pr edit failed');
     assert.equal(ghCalls.at(-1), 'pr edit --attach');
     assert.deepEqual(order.slice(-2), ['gh pr edit --attach', 'hand-off']);
@@ -451,7 +450,7 @@ describe('attach on a machine whose gh cannot attach', () => {
 
   it('hands off when gh cannot read the pull request, as it cannot where GraphQL is blocked', async () => {
     const { deps, run, bundles, ghCalls } = remoteRun({ gh: ghThatHasAttach({ code: 0, stdout: '', stderr: '' }, { code: 1, stdout: '', stderr: 'GraphQL: blocked\n' }) });
-    const result = await attach(deps, { verb: 'attach', run, pr: 669, media: BOTH, before: null });
+    const result = await attach(deps, { verb: 'attach', run, pr: 669, media: STILL, before: null });
     assert.equal(result.via === 'runner' && result.because, 'gh pr view failed');
     assert.deepEqual(ghCalls, ['pr edit --help', 'pr view 669']);
     assert.equal(bundles.length, 1);
@@ -459,8 +458,8 @@ describe('attach on a machine whose gh cannot attach', () => {
 
   it('hands off only the kind of file that was asked for', async () => {
     const { deps, run, bundles } = remoteRun();
-    await attach(deps, { verb: 'attach', run, pr: 669, media: { screenshots: [], video: true }, before: null });
-    await attach(deps, { verb: 'attach', run, pr: 669, media: { screenshots: ['profile'], video: false }, before: null });
+    await attach(deps, { verb: 'attach', run, pr: 669, media: { kind: 'video' }, before: null });
+    await attach(deps, { verb: 'attach', run, pr: 669, media: STILL, before: null });
     assert.deepEqual(bundles.map((bundle) => bundle.files.map((file) => file.name)), [['video.mp4'], ['profile.png']]);
   });
 
@@ -483,20 +482,19 @@ describe('attach on a machine whose gh cannot attach', () => {
         screenshots: [{ label: 'profile', path: join(before.dir, 'screenshots', 'profile.png') }],
       }),
     );
-    const result = await attach(deps, { verb: 'attach', run, pr: 669, media: BOTH, before: before.run });
+    const result = await attach(deps, { verb: 'attach', run, pr: 669, media: STILL, before: before.run });
     assert.deepEqual(bundles[0]!.before, {
       summary: { run: before.run, platform: 'ios', device: 'iPhone Air on xcode-27', commit: BEFORE_COMMIT, passed: 0, flaky: 0, total: 1 },
       files: [
         { name: 'before-profile.png', path: join(before.dir, 'screenshots', 'profile.png') },
-        { name: 'before-video.mp4', path: join(before.dir, 'video.mp4') },
       ],
     });
-    assert.deepEqual(result.via === 'runner' && result.handedOff, [join(dir, 'screenshots', 'profile.png'), join(dir, 'video.mp4'), join(before.dir, 'screenshots', 'profile.png'), join(before.dir, 'video.mp4')]);
+    assert.deepEqual(result.via === 'runner' && result.handedOff, [join(dir, 'screenshots', 'profile.png'), join(before.dir, 'screenshots', 'profile.png')]);
   });
 
   it('hands nothing off when the directory of the before run is not in this checkout, and says what to do', async () => {
     const { deps, run, bundles, ghCalls } = remoteRun();
-    await assert.rejects(attach(deps, { verb: 'attach', run, pr: 669, media: BOTH, before: 'r20261008-040000-0000' as RunId }), {
+    await assert.rejects(attach(deps, { verb: 'attach', run, pr: 669, media: STILL, before: 'r20261008-040000-0000' as RunId }), {
       code: 'USAGE',
       message: `no run r20261008-040000-0000 in ${deps.workspace.root}/runs, so its files cannot be shown as the before`,
       fix: 'pass a run that `{cli} run` made in this checkout, whose directory is still there, or attach without --before, and name the before run in the PR',
@@ -506,7 +504,7 @@ describe('attach on a machine whose gh cannot attach', () => {
 
   const failure = async (deps: Deps, run: RunId): Promise<VerifyFailure> => {
     try {
-      await attach(deps, { verb: 'attach', run, pr: 669, media: BOTH, before: null });
+      await attach(deps, { verb: 'attach', run, pr: 669, media: STILL, before: null });
     } catch (error) {
       if (error instanceof VerifyFailure) return error;
       throw error;

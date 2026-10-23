@@ -920,7 +920,7 @@ describe('a run on a session that built uncommitted changes', () => {
     const { record } = await runVerb(w.deps(), RUN_ALL);
     const ran: string[] = [];
     const deps = { ...w.deps(), runner: async (command: string) => (ran.push(command), { code: 0, stdout: '', stderr: '' }) };
-    await assert.rejects(attach(deps, { verb: 'attach', run: record.run, pr: 9, media: { screenshots: ['home'], video: false }, before: null }), {
+    await assert.rejects(attach(deps, { verb: 'attach', run: record.run, pr: 9, media: { kind: 'screenshots', labels: ['home'] }, before: null }), {
       code: 'EVIDENCE_UNSAFE',
       message: `run ${record.run} ran on a session build of ${SESSION_COMMIT.slice(0, 12)} with uncommitted changes (${PATCH.slice(0, 12)}), so no commit holds the app it shows`,
     });
