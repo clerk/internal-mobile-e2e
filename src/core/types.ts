@@ -190,10 +190,7 @@ export interface EvidenceSummary {
   readonly total: number;
 }
 
-export interface MediaChoice {
-  readonly screenshots: readonly string[];
-  readonly video: boolean;
-}
+export type MediaChoice = { readonly kind: 'video' } | { readonly kind: 'screenshots'; readonly labels: readonly string[] };
 
 export interface EvidenceFile {
   readonly name: string;

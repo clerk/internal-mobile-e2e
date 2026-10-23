@@ -19,6 +19,7 @@ import {
   type DoctorCheck,
   type HostAdapter,
   type Invocation,
+  type MediaChoice,
   type Platform,
   type RunResult,
   type Verb,
@@ -32,7 +33,7 @@ const USAGE_FIX = [
   '{cli} up [--platform p] [--backend auto|local|remote] [--runner <label>] [--wait <seconds>]',
   '{cli} run <feature|feature/spec|path.e2e.ts>... | --all [--platform p] [--backend auto|local|remote] [--runner <label>] [--grep re] [--retries <n>] [--max-failures <n>] [--github-report] [--no-video] [--wait <seconds>]',
   '{cli} screen [--platform p] [--png]',
-  '{cli} attach <run-id> --pr <n> --screenshot <label>... | --video [--both] [--before <run-id>]',
+  '{cli} attach <run-id> --pr <n> --screenshot <label>... | --video [--before <run-id>]',
   '{cli} down [--platform p] [--stale] [--dry-run]',
   'every verb takes --json',
 ].join('; ');
@@ -53,7 +54,7 @@ const FLAGS: Readonly<Record<Verb, FlagSpec>> = {
   up: { platform: 'value', backend: 'value', runner: 'value', wait: 'value' },
   run: { platform: 'value', backend: 'value', runner: 'value', all: 'bool', grep: 'value', retries: 'value', 'max-failures': 'value', 'github-report': 'bool', 'no-video': 'bool', wait: 'value' },
   screen: { platform: 'value', png: 'bool' },
-  attach: { pr: 'value', screenshot: 'list', video: 'bool', both: 'bool', before: 'value' },
+  attach: { pr: 'value', screenshot: 'list', video: 'bool', before: 'value' },
   down: { platform: 'value', stale: 'bool', 'dry-run': 'bool' },
 };
 
@@ -167,11 +168,11 @@ export function parseArgv(argv: readonly string[]): Invocation {
       if (positionals.length !== 1) throw usage('{cli} attach takes exactly one run id');
       const run = parseRunId(positionals[0]!);
       const pr = positiveInt('pr', values.get('pr'), undefined);
-      const media = { screenshots: lists.get('screenshot') ?? [], video: bools.has('video') };
-      if (media.screenshots.length === 0 && !media.video) throw nothingToShow();
-      if (media.screenshots.length > 0 && media.video && !bools.has('both')) {
-        throw usage('a change is shown by one video or by screenshots, not both: pass --video alone for a flow or behavior, or --screenshot alone for a still change; add --both only when the reviewer needs both to see the change');
-      }
+      const screenshots = lists.get('screenshot') ?? [];
+      const video = bools.has('video');
+      if (screenshots.length === 0 && !video) throw nothingToShow();
+      if (screenshots.length > 0 && video) throw usage('post one kind: --video for a change to behavior or a flow, --screenshot <label> for a still change');
+      const media: MediaChoice = video ? { kind: 'video' } : { kind: 'screenshots', labels: screenshots };
       const before = values.get('before');
       command = { verb, run, pr, media, before: before === undefined ? null : parseRunId(before) };
       break;

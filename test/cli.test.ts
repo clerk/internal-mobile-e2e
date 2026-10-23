@@ -54,17 +54,16 @@ describe('parseArgv', () => {
       verb: 'attach',
       run: 'r20261002-141210-7c1e',
       pr: 412,
-      media: { screenshots: ['a', 'b'], video: false },
+      media: { kind: 'screenshots', labels: ['a', 'b'] },
       before: null,
     });
     assert.deepEqual(parseArgv(['attach', 'r20261002-141210-7c1e', '--pr=7', '--video', '--before', 'r20261002-140000-0a1b']).command, {
       verb: 'attach',
       run: 'r20261002-141210-7c1e',
       pr: 7,
-      media: { screenshots: [], video: true },
+      media: { kind: 'video' },
       before: 'r20261002-140000-0a1b',
     });
-    assert.deepEqual((parseArgv(['attach', 'r20261002-141210-7c1e', '--pr=7', '--video', '--screenshot', 'a', '--both']).command as Extract<Command, { verb: 'attach' }>).media, { screenshots: ['a'], video: true });
     assert.deepEqual(parseArgv(['down', '--stale', '--dry-run']).command, { verb: 'down', stale: true, dryRun: true });
   });
 
@@ -78,11 +77,12 @@ describe('parseArgv', () => {
     assert.equal(usageError(['attach', 'r20261002-141210-7c1e', '--pr', '412', '--before', 'r20261002-140000-0a1b']).message, neither.message);
   });
 
-  it('posts one kind of evidence for a change, and both only when --both says the reviewer needs both', () => {
+  it('posts one kind of evidence for a change, and refuses a video with screenshots, naming which kind fits which change', () => {
     assert.equal(
       usageError(['attach', 'r20261002-141210-7c1e', '--pr', '412', '--video', '--screenshot', 'a']).message,
-      'a change is shown by one video or by screenshots, not both: pass --video alone for a flow or behavior, or --screenshot alone for a still change; add --both only when the reviewer needs both to see the change',
+      'post one kind: --video for a change to behavior or a flow, --screenshot <label> for a still change',
     );
+    assert.throws(() => parseArgv(['attach', 'r20261002-141210-7c1e', '--pr', '412', '--video', '--screenshot', 'a', '--both']), { code: 'USAGE' });
   });
 
   it('reads --json on every verb', () => {
