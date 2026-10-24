@@ -131,6 +131,7 @@ async function startAgent(request: SessionRequest, options: { readonly cwd?: str
       VERIFY_SESSION_CLOUDFLARED: join(bin, 'cloudflared'),
       VERIFY_SESSION_AGENT_DEVICE: join(bin, 'agent-device'),
       VERIFY_SESSION_SKIP_DNS: '1',
+      AGENT_DEVICE_STATE_DIR: join(work, 'agent-device-state'),
       ...(options.minuteMs === undefined ? {} : { VERIFY_SESSION_MINUTE_MS: String(options.minuteMs) }),
       ...(options.device === false ? {} : { VERIFY_SESSION_DEVICE_ID: 'UDID-1', VERIFY_SESSION_DEVICE_NAME: 'Test Phone', VERIFY_SESSION_DEVICE_MODULE: options.deviceModule ?? join(here, '..', 'testing', 'fake-session-device.ts') }),
       ...options.env,
@@ -260,6 +261,18 @@ describe('session agent', () => {
     const log = readFileSync(join(agent.work, 'agent-device-proxy.log'), 'utf8');
     assert.match(log, /Daemon auth token: <token>/);
     assert.equal(log.includes(token), false);
+    await agent.call('/__sim/stop', { method: 'POST' });
+    await agent.exited;
+  });
+
+  it('removes the registration a daemon that failed to start left, so agent-device can start', async () => {
+    const state = join(mkdtempSync(join(tmpdir(), 'verify-agent-device-state-')), 'state');
+    mkdirSync(state);
+    writeFileSync(join(state, 'daemon.json'), JSON.stringify({ pid: 999_991, port: 47_999 }));
+    const agent = await startAgent(base, { agentDevice: true, minuteMs: 600, env: { AGENT_DEVICE_STATE_DIR: state } });
+    await agent.call('/agent-device/health');
+    assert.equal((await until(async () => { const h = await agent.health(); return h.daemon ? h : null; }, 'the daemon to report healthy')).daemon, true);
+    assert.equal(existsSync(join(state, 'daemon.json')), false);
     await agent.call('/__sim/stop', { method: 'POST' });
     await agent.exited;
   });

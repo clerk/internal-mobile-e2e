@@ -3,6 +3,7 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { Resolver } from 'node:dns/promises';
 import { appendFileSync, createReadStream, existsSync, mkdirSync, rmSync, statSync, writeFileSync, type ReadStream } from 'node:fs';
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
+import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -23,6 +24,7 @@ import {
   type SessionRequest,
 } from './protocol.ts';
 import type { CommandLine, ExecResult } from '../exec.ts';
+import { clearStuckRegistration } from '../driver.ts';
 import { resolvePackageBinaryFromModule } from '../tools.ts';
 import { coreVersion } from '../version.ts';
 import { HANDOFF_LIMITS, HandoffRefused, evidenceReceiver } from './handoff.ts';
@@ -287,6 +289,8 @@ async function serve(env: NodeJS.ProcessEnv): Promise<void> {
 
   function ensureProxy(): void {
     if (token === null || proxy !== null || ending !== null) return;
+    const stuck = clearStuckRegistration(env.AGENT_DEVICE_STATE_DIR ?? join(homedir(), '.agent-device'));
+    if (stuck.kind === 'stuck') noteDaemon(`removed the daemon.json of pid ${stuck.pid}, a daemon that failed to start, which agent-device would refuse and never remove`);
     const child = spawn(env.VERIFY_SESSION_AGENT_DEVICE ?? PINNED_AGENT_DEVICE, ['proxy', '--host', '127.0.0.1', '--port', String(agentPort)], {
       env: { ...process.env, AGENT_DEVICE_DAEMON_AUTH_TOKEN: token },
       stdio: ['ignore', 'pipe', 'pipe'],
