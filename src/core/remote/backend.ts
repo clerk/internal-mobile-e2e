@@ -17,6 +17,7 @@ import { firstHealth, sendEvidence, sessionCall, sessionHealth, tunnelUrl, type 
 import { forgetSession, newSessionRequest, saveToken, savedDriverId, type RemoteDeps, type RemoteSettings } from './settings.ts';
 
 const READY_DEADLINE_MS = (BUILD_TIMEOUT_MINUTES + 5) * 60_000;
+const DAEMON_DOWN_LIMIT_MS = 10 * 60_000;
 const EXPIRING_MS = 2 * 60_000;
 
 const COMMITS_PER_PAGE = 100;
@@ -97,6 +98,7 @@ export function remoteBackend(settings: RemoteSettings, deps: RemoteDeps = { env
     const fix = patch === null ? 'fix the build error above, commit, push, then rerun {cli} up' : 'fix the build error above, then rerun {cli} up, which sends the uncommitted changes again';
     let last = '';
     let shown = 0;
+    let daemonDownSince: number | null = null;
     const showLog = async (): Promise<void> => {
       const answer = await sessionCall(lease, `/__sim/build/log?from=${shown}`, { timeoutMs: 15_000 }).catch(() => null);
       if (answer?.status !== 200) return;
@@ -124,7 +126,17 @@ export function remoteBackend(settings: RemoteSettings, deps: RemoteDeps = { env
             'rerun {cli} up, and the same session builds again from what the stopped build left; if that build is stopped too, {cli} down, then {cli} up --runner <a faster runner label>',
           );
         }
-        if (ours && health.build.state === 'built' && health.device?.ready === true && health.daemon) return health.build;
+        const waitingOnDaemon = ours && health.build.state === 'built' && health.device?.ready === true;
+        if (waitingOnDaemon && health.daemon) return health.build;
+        daemonDownSince = waitingOnDaemon ? (daemonDownSince ?? Date.now()) : null;
+        if (daemonDownSince !== null && Date.now() - daemonDownSince >= DAEMON_DOWN_LIMIT_MS) {
+          await endSession(await github(), lease.providerRef, lease).catch(() => undefined);
+          throw new VerifyFailure(
+            'NOT_READY',
+            `agent-device did not come up on ${lease.runner} in the ${DAEMON_DOWN_LIMIT_MS / 60_000} minutes after the device was ready, so the session was ended. Its last output on the runner:\n${health.daemonTail ?? '(none)'}`,
+            `rerun {cli} up; if agent-device fails the same way again, read ${runUrl(lease.providerRef)}`,
+          );
+        }
         const line = `wait    ${describeBuild(health)}; device ${health.device?.ready === true ? 'ready' : 'booting'}; agent-device ${health.daemon ? 'up' : 'starting'}`;
         const coarse = line.replace(/ \d+s/, '');
         if (coarse !== last) progress(line);

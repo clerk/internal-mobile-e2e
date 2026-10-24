@@ -3,6 +3,7 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { Resolver } from 'node:dns/promises';
 import { appendFileSync, createReadStream, existsSync, mkdirSync, rmSync, statSync, writeFileSync, type ReadStream } from 'node:fs';
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
+import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -23,6 +24,7 @@ import {
   type SessionRequest,
 } from './protocol.ts';
 import type { CommandLine, ExecResult } from '../exec.ts';
+import { clearStuckRegistration } from '../driver.ts';
 import { resolvePackageBinaryFromModule } from '../tools.ts';
 import { coreVersion } from '../version.ts';
 import { HANDOFF_LIMITS, HandoffRefused, evidenceReceiver } from './handoff.ts';
@@ -247,6 +249,7 @@ async function serve(env: NodeJS.ProcessEnv): Promise<void> {
   let daemonOkAt = 0;
   let proxy: ChildProcess | null = null;
   let proxyStartedAt = 0;
+  const daemonTail: string[] = [];
   let recorder: ({ readonly child: ChildProcess; readonly exited: Promise<number>; readonly file: string } & Pick<RecipeAnswers['record'], 'stop' | 'collect'>) | null = null;
   let build: BuildState = { state: 'none' };
   let buildChild: ChildProcess | null = null;
@@ -286,17 +289,29 @@ async function serve(env: NodeJS.ProcessEnv): Promise<void> {
 
   function ensureProxy(): void {
     if (token === null || proxy !== null || ending !== null) return;
+    const stuck = clearStuckRegistration(env.AGENT_DEVICE_STATE_DIR ?? join(homedir(), '.agent-device'));
+    if (stuck.kind === 'stuck') noteDaemon(`removed the daemon.json of pid ${stuck.pid}, a daemon that failed to start, which agent-device would refuse and never remove`);
     const child = spawn(env.VERIFY_SESSION_AGENT_DEVICE ?? PINNED_AGENT_DEVICE, ['proxy', '--host', '127.0.0.1', '--port', String(agentPort)], {
       env: { ...process.env, AGENT_DEVICE_DAEMON_AUTH_TOKEN: token },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     proxy = child;
     proxyStartedAt = Date.now();
-    child.stdout.on('data', (chunk: Buffer) => log('agent-device-proxy', chunk));
-    child.stderr.on('data', (chunk: Buffer) => log('agent-device-proxy', chunk));
-    void exitOf(child).then(() => {
+    const output = (chunk: Buffer) => {
+      log('agent-device-proxy', chunk);
+      noteDaemon(chunk.toString());
+    };
+    child.stdout.on('data', output);
+    child.stderr.on('data', output);
+    void exitOf(child).then((code) => {
+      noteDaemon(`agent-device exited ${code}`);
       if (proxy === child) proxy = null;
     });
+  }
+
+  function noteDaemon(text: string): void {
+    for (const line of text.split('\n')) if (line.trim() !== '') daemonTail.push(line);
+    daemonTail.splice(0, Math.max(0, daemonTail.length - 30));
   }
 
   async function checkDaemon(): Promise<void> {
@@ -305,7 +320,10 @@ async function serve(env: NodeJS.ProcessEnv): Promise<void> {
       .then(async (response) => response.ok && /"ok":\s*true/.test(await response.text()))
       .catch(() => false);
     if (healthy) daemonOkAt = Date.now();
-    if (Date.now() - Math.max(daemonOkAt, proxyStartedAt) > DAEMON_GRACE_MS) proxy?.kill('SIGTERM');
+    if (Date.now() - Math.max(daemonOkAt, proxyStartedAt) > DAEMON_GRACE_MS && proxy !== null) {
+      noteDaemon(`agent-device answered no health check for ${DAEMON_GRACE_MS / 1000}s, so the session restarts it`);
+      proxy.kill('SIGTERM');
+    }
   }
 
   function runCommands(commands: readonly CommandLine[], stopped: () => boolean, tail: string[]): Promise<number> {
@@ -411,10 +429,12 @@ async function serve(env: NodeJS.ProcessEnv): Promise<void> {
 
   function health(): SessionHealth {
     const now = Date.now();
+    const daemon = proxy !== null && now - daemonOkAt < 3 * tickMs;
     return {
       core,
       device: device === null ? null : { id: deviceId, name: deviceName, ready: existsSync(join(work, 'device-ready')) },
-      daemon: proxy !== null && now - daemonOkAt < 3 * tickMs,
+      daemon,
+      daemonTail: daemon || daemonTail.length === 0 ? null : scrub(daemonTail.join('\n')),
       build: build.state === 'building' ? { ...build, seconds: Math.round((now - buildBegan) / 1000) } : build,
       capAt: new Date(capAt).toISOString(),
       ending,

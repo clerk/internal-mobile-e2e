@@ -80,7 +80,7 @@ describe('deviceCommand', () => {
 
 describe('a session started from another core', () => {
   const health = (core: string | undefined): SessionHealth =>
-    ({ core, device: { id: 'emulator-5554', name: 'Pixel', ready: true }, daemon: true, build: { state: 'none' }, capAt: '', ending: null }) as SessionHealth;
+    ({ core, device: { id: 'emulator-5554', name: 'Pixel', ready: true }, daemon: true, daemonTail: null, build: { state: 'none' }, capAt: '', ending: null }) as SessionHealth;
   const backend = () =>
     remoteBackend(
       { platform: 'android', repo: 'clerk/clerk-android', workflow: 'verify-remote.yml', sessionsDir: mkdtempSync(join(tmpdir(), 'verify-core-')), runner: 'linux', plumbingRunner: 'ubuntu-latest', device: 'Pixel', idleMinutes: 15, capMinutes: 60, requirement: '' },
@@ -109,7 +109,7 @@ describe('a held session whose build is not the one the lease names', () => {
       { env: {}, runner: run, github: async () => assert.fail('a session that answers is not looked up at GitHub') },
     );
   const checked = (build: SessionHealth['build'], lease: Partial<RemoteLease>) => {
-    tunnel(() => ({ status: 200, body: { core: coreVersion(), device: { id: 'UDID', name: 'iPhone Air', ready: true }, daemon: true, build, capAt: '', ending: null } satisfies SessionHealth }));
+    tunnel(() => ({ status: 200, body: { core: coreVersion(), device: { id: 'UDID', name: 'iPhone Air', ready: true }, daemon: true, daemonTail: null, build, capAt: '', ending: null } satisfies SessionHealth }));
     return backend().check({ ...remoteLease('ios'), ...lease });
   };
 
@@ -135,7 +135,7 @@ describe('acquiring a session whose agent has another core', () => {
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input));
       tunnelCalls.push(`${init?.method ?? 'GET'} ${url.host}${url.pathname}`);
-      const body = url.pathname === '/__sim/stop' ? { ok: true } : ({ core: '0123456789ab', device: { id: 'emulator-5560', name: 'Pixel', ready: false }, daemon: false, build: { state: 'none' }, capAt: '', ending: null } satisfies SessionHealth);
+      const body = url.pathname === '/__sim/stop' ? { ok: true } : ({ core: '0123456789ab', device: { id: 'emulator-5560', name: 'Pixel', ready: false }, daemon: false, daemonTail: null, build: { state: 'none' }, capAt: '', ending: null } satisfies SessionHealth);
       return new Response(JSON.stringify(body), { status: 200 });
     }) as typeof fetch;
     const hubCalls: string[] = [];
