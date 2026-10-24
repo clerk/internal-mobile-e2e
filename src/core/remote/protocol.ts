@@ -110,6 +110,7 @@ export interface SessionHealth {
   readonly core: string;
   readonly device: { readonly id: string; readonly name: string; readonly ready: boolean } | null;
   readonly daemon: boolean;
+  readonly daemonTail: string | null;
   readonly build: BuildState;
   readonly capAt: string;
   readonly ending: EndReason | null;

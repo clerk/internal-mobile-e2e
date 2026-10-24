@@ -188,7 +188,7 @@ describe('the remote backend waits for the session to build', () => {
   const SHA = 'a'.repeat(40);
   const realFetch = globalThis.fetch;
 
-  async function installOnASessionWhoseBuildIs(build: SessionHealth['build'] | readonly SessionHealth['build'][], log: readonly string[] = ['']): Promise<{ failure: VerifyFailure; asked: string[]; progress: string[] }> {
+  async function installOnASessionWhoseBuildIs(build: SessionHealth['build'] | readonly SessionHealth['build'][], log: readonly string[] = [''], daemon: Pick<SessionHealth, 'daemon' | 'daemonTail'> = { daemon: true, daemonTail: null }): Promise<{ failure: VerifyFailure; asked: string[]; progress: string[] }> {
     const { dir } = repo();
     const session = join(dir, '.verify', 'remote', 'ios0000cc');
     mkdirSync(session, { recursive: true });
@@ -196,7 +196,7 @@ describe('the remote backend waits for the session to build', () => {
     const lease: RemoteLease = { backend: 'remote', provider: 'github-actions', platform: 'ios', session: 'ios0000cc', providerRef: '7', baseUrl: 'https://quick-fox.trycloudflare.com', tokenFile: join(session, 'token'), deviceId: 'UDID-1', deviceName: 'iPhone Air', runner: 'free-mac', expiresAt: '2026-10-13T18:00:00.000Z', builtSha: null, builtPatch: null, acquiredAt: '2026-10-13T17:00:00.000Z', installedBuild: null };
     const app: BuiltApp = { platform: 'ios', key: 'ios-k1' as BuildKey, appId: 'com.example.app', path: null, source: 'github-actions', sourceSha: SHA, patch: null };
     const builds = Array.isArray(build) ? build : [build];
-    const health = (polled: number): SessionHealth => ({ core: 'unread', device: { id: 'UDID-1', name: 'iPhone Air', ready: true }, daemon: true, build: builds[Math.min(polled, builds.length - 1)]!, capAt: '2026-10-13T18:00:00.000Z', ending: null });
+    const health = (polled: number): SessionHealth => ({ core: 'unread', device: { id: 'UDID-1', name: 'iPhone Air', ready: true }, ...daemon, build: builds[Math.min(polled, builds.length - 1)]!, capAt: '2026-10-13T18:00:00.000Z', ending: null });
     const asked: string[] = [];
     let polled = 0;
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -204,12 +204,13 @@ describe('the remote backend waits for the session to build', () => {
       asked.push(`${init?.method ?? 'GET'} ${url.pathname}${url.search}`);
       if (url.pathname === '/__sim/build') return Response.json(health(0), { status: 202 });
       if (url.pathname === '/__sim/health') return Response.json(health(polled++));
+      if (url.pathname === '/__sim/stop') return Response.json({ ok: true });
       const written = Buffer.from(log[Math.min(polled - 1, log.length - 1)]!);
       const from = Number(url.searchParams.get('from'));
       return new Response(written.subarray(from), { headers: { [BUILD_LOG_START]: String(from) } });
     }) as typeof fetch;
     try {
-      const { hub } = github(() => ({ status: 200, json: {} }));
+      const { hub } = github(() => ({ status: 200, json: { status: 'completed', conclusion: 'success' } }));
       const progress: string[] = [];
       const failure = await remoteBackend(settings(dir), { env: {}, runner: run, github: async () => hub }).install(lease, app, (line) => progress.push(line)).then(
         () => assert.fail('the install did not fail'),
@@ -251,6 +252,24 @@ describe('the remote backend waits for the session to build', () => {
     const { asked, failure } = await installOnASessionWhoseBuildIs([another, ours], ['output of another build\n', 'error: no such module\n']);
     assert.deepEqual(asked, [`POST /__sim/build?sha=${SHA}`, 'GET /__sim/health', 'GET /__sim/health', 'GET /__sim/build/log?from=0']);
     assert.equal(failure.message, 'the session could not build aaaaaaaaaaaa:\nerror: no such module');
+  });
+
+  it('ends the session when agent-device stays down for ten minutes on a built, ready device, and shows what it printed', { timeout: 20_000 }, async () => {
+    const realNow = Date.now;
+    let now = realNow();
+    Date.now = () => (now += 4 * 60_000);
+    try {
+      const { failure, asked } = await installOnASessionWhoseBuildIs(
+        { state: 'built', sha: 'a'.repeat(40), patch: null, seconds: 300, incremental: false },
+        [''],
+        { daemon: false, daemonTail: 'simctl: Unable to boot device\nagent-device exited 3' },
+      );
+      assert.equal(failure.code, 'NOT_READY');
+      assert.equal(failure.message, 'agent-device did not come up on free-mac in the 10 minutes after the device was ready, so the session was ended. Its last output on the runner:\nsimctl: Unable to boot device\nagent-device exited 3');
+      assert.ok(asked.includes('POST /__sim/stop'), asked.join(', '));
+    } finally {
+      Date.now = realNow;
+    }
   });
 });
 

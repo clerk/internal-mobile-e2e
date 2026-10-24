@@ -264,6 +264,20 @@ describe('session agent', () => {
     await agent.exited;
   });
 
+  it('reports what agent-device printed while it is down, without the bearer', async () => {
+    const broken = join(mkdtempSync(join(tmpdir(), 'verify-broken-agent-device-')), 'agent-device');
+    writeFileSync(broken, '#!/bin/sh\necho "Daemon auth token: $AGENT_DEVICE_DAEMON_AUTH_TOKEN"\necho "simctl: Unable to boot device" >&2\nexit 3\n', { mode: 0o755 });
+    const agent = await startAgent(base, { minuteMs: 600, env: { VERIFY_SESSION_AGENT_DEVICE: broken } });
+    await agent.call('/agent-device/health');
+    const health = await until(async () => { const h = await agent.health(); return h.daemonTail?.includes('agent-device exited 3') ? h : null; }, 'the agent to report the exit');
+    assert.equal(health.daemon, false);
+    assert.ok(health.daemonTail!.includes('Daemon auth token: <token>'), health.daemonTail!);
+    assert.ok(health.daemonTail!.includes('simctl: Unable to boot device'), health.daemonTail!);
+    assert.equal(health.daemonTail!.includes(token), false);
+    await agent.call('/__sim/stop', { method: 'POST' });
+    await agent.exited;
+  });
+
   it('ends itself at the cap even while the driver keeps calling', async () => {
     const agent = await startAgent({ ...base, idleMinutes: 2, capMinutes: 2 }, { minuteMs: 1500 });
     const poll = setInterval(() => void agent.call('/__sim/health').catch(() => undefined), 200);

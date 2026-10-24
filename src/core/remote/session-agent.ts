@@ -247,6 +247,7 @@ async function serve(env: NodeJS.ProcessEnv): Promise<void> {
   let daemonOkAt = 0;
   let proxy: ChildProcess | null = null;
   let proxyStartedAt = 0;
+  const daemonTail: string[] = [];
   let recorder: ({ readonly child: ChildProcess; readonly exited: Promise<number>; readonly file: string } & Pick<RecipeAnswers['record'], 'stop' | 'collect'>) | null = null;
   let build: BuildState = { state: 'none' };
   let buildChild: ChildProcess | null = null;
@@ -292,11 +293,21 @@ async function serve(env: NodeJS.ProcessEnv): Promise<void> {
     });
     proxy = child;
     proxyStartedAt = Date.now();
-    child.stdout.on('data', (chunk: Buffer) => log('agent-device-proxy', chunk));
-    child.stderr.on('data', (chunk: Buffer) => log('agent-device-proxy', chunk));
-    void exitOf(child).then(() => {
+    const output = (chunk: Buffer) => {
+      log('agent-device-proxy', chunk);
+      noteDaemon(chunk.toString());
+    };
+    child.stdout.on('data', output);
+    child.stderr.on('data', output);
+    void exitOf(child).then((code) => {
+      noteDaemon(`agent-device exited ${code}`);
       if (proxy === child) proxy = null;
     });
+  }
+
+  function noteDaemon(text: string): void {
+    for (const line of text.split('\n')) if (line.trim() !== '') daemonTail.push(line);
+    daemonTail.splice(0, Math.max(0, daemonTail.length - 30));
   }
 
   async function checkDaemon(): Promise<void> {
@@ -305,7 +316,10 @@ async function serve(env: NodeJS.ProcessEnv): Promise<void> {
       .then(async (response) => response.ok && /"ok":\s*true/.test(await response.text()))
       .catch(() => false);
     if (healthy) daemonOkAt = Date.now();
-    if (Date.now() - Math.max(daemonOkAt, proxyStartedAt) > DAEMON_GRACE_MS) proxy?.kill('SIGTERM');
+    if (Date.now() - Math.max(daemonOkAt, proxyStartedAt) > DAEMON_GRACE_MS && proxy !== null) {
+      noteDaemon(`agent-device answered no health check for ${DAEMON_GRACE_MS / 1000}s, so the session restarts it`);
+      proxy.kill('SIGTERM');
+    }
   }
 
   function runCommands(commands: readonly CommandLine[], stopped: () => boolean, tail: string[]): Promise<number> {
@@ -411,10 +425,12 @@ async function serve(env: NodeJS.ProcessEnv): Promise<void> {
 
   function health(): SessionHealth {
     const now = Date.now();
+    const daemon = proxy !== null && now - daemonOkAt < 3 * tickMs;
     return {
       core,
       device: device === null ? null : { id: deviceId, name: deviceName, ready: existsSync(join(work, 'device-ready')) },
-      daemon: proxy !== null && now - daemonOkAt < 3 * tickMs,
+      daemon,
+      daemonTail: daemon || daemonTail.length === 0 ? null : scrub(daemonTail.join('\n')),
       build: build.state === 'building' ? { ...build, seconds: Math.round((now - buildBegan) / 1000) } : build,
       capAt: new Date(capAt).toISOString(),
       ending,
