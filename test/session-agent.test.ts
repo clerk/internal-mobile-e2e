@@ -291,6 +291,20 @@ describe('session agent', () => {
     await agent.exited;
   });
 
+  it('restarts agent-device soon after its daemon goes down, and holds a call until it is back', { timeout: 20_000 }, async () => {
+    const starts = join(mkdtempSync(join(tmpdir(), 'verify-agent-device-starts-')), 'starts');
+    const agent = await startAgent(base, { agentDevice: true, minuteMs: 600, env: { FAKE_AGENT_DEVICE_STARTS: starts, FAKE_AGENT_DEVICE_DIES_AFTER_MS: '1500' } });
+    await agent.call('/agent-device/health');
+    await until(async () => ((await agent.health()).daemon ? true : null), 'the daemon to report healthy');
+    await until(async () => ((await agent.health()).daemon ? null : true), 'the daemon to go down');
+    const answer = await agent.call('/rpc', { method: 'POST', body: '{}' });
+    assert.equal(answer.status, 200);
+    assert.equal(((await answer.json()) as { ok: boolean }).ok, true);
+    assert.equal(readFileSync(starts, 'utf8'), 'start\nstart\n');
+    await agent.call('/__sim/stop', { method: 'POST' });
+    await agent.exited;
+  });
+
   it('ends itself at the cap even while the driver keeps calling', async () => {
     const agent = await startAgent({ ...base, idleMinutes: 2, capMinutes: 2 }, { minuteMs: 1500 });
     const poll = setInterval(() => void agent.call('/__sim/health').catch(() => undefined), 200);

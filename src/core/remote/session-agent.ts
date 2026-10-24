@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { Resolver } from 'node:dns/promises';
-import { appendFileSync, createReadStream, existsSync, mkdirSync, rmSync, statSync, writeFileSync, type ReadStream } from 'node:fs';
+import { appendFileSync, createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, type ReadStream } from 'node:fs';
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -32,6 +32,7 @@ import { TUNNEL } from './tunnel.ts';
 
 const AGENT_ROUTES = ['/agent-device', '/health', '/rpc', '/upload', '/artifacts'];
 const DAEMON_GRACE_MS = 60_000;
+const DAEMON_WAIT_MS = 90_000;
 const COMMAND_TIMEOUT_MS = 30_000;
 const PUBLIC_RESOLVERS = ['1.1.1.1', '8.8.8.8'];
 const RECIPE = fileURLToPath(new URL(import.meta.url.endsWith('.ts') ? './recipe.ts' : './recipe.js', import.meta.url));
@@ -249,6 +250,8 @@ async function serve(env: NodeJS.ProcessEnv): Promise<void> {
   let daemonOkAt = 0;
   let proxy: ChildProcess | null = null;
   let proxyStartedAt = 0;
+  let proxyWasHealthy = false;
+  const agentDeviceState = env.AGENT_DEVICE_STATE_DIR ?? join(homedir(), '.agent-device');
   const daemonTail: string[] = [];
   let recorder: ({ readonly child: ChildProcess; readonly exited: Promise<number>; readonly file: string } & Pick<RecipeAnswers['record'], 'stop' | 'collect'>) | null = null;
   let build: BuildState = { state: 'none' };
@@ -289,7 +292,7 @@ async function serve(env: NodeJS.ProcessEnv): Promise<void> {
 
   function ensureProxy(): void {
     if (token === null || proxy !== null || ending !== null) return;
-    const stuck = clearStuckRegistration(env.AGENT_DEVICE_STATE_DIR ?? join(homedir(), '.agent-device'));
+    const stuck = clearStuckRegistration(agentDeviceState);
     if (stuck.kind === 'stuck') noteDaemon(`removed the daemon.json of pid ${stuck.pid}, a daemon that failed to start, which agent-device would refuse and never remove`);
     const child = spawn(env.VERIFY_SESSION_AGENT_DEVICE ?? PINNED_AGENT_DEVICE, ['proxy', '--host', '127.0.0.1', '--port', String(agentPort)], {
       env: { ...process.env, AGENT_DEVICE_DAEMON_AUTH_TOKEN: token },
@@ -297,6 +300,7 @@ async function serve(env: NodeJS.ProcessEnv): Promise<void> {
     });
     proxy = child;
     proxyStartedAt = Date.now();
+    proxyWasHealthy = false;
     const output = (chunk: Buffer) => {
       log('agent-device-proxy', chunk);
       noteDaemon(chunk.toString());
@@ -316,14 +320,34 @@ async function serve(env: NodeJS.ProcessEnv): Promise<void> {
 
   async function checkDaemon(): Promise<void> {
     if (proxy === null) return;
-    const healthy = await fetch(`http://127.0.0.1:${agentPort}/health`, { signal: AbortSignal.timeout(4000) })
-      .then(async (response) => response.ok && /"ok":\s*true/.test(await response.text()))
-      .catch(() => false);
-    if (healthy) daemonOkAt = Date.now();
-    if (Date.now() - Math.max(daemonOkAt, proxyStartedAt) > DAEMON_GRACE_MS && proxy !== null) {
-      noteDaemon(`agent-device answered no health check for ${DAEMON_GRACE_MS / 1000}s, so the session restarts it`);
-      proxy.kill('SIGTERM');
+    const answer = await fetch(`http://127.0.0.1:${agentPort}/health`, { signal: AbortSignal.timeout(4000) })
+      .then(async (response) => (await response.json()) as { readonly ok?: unknown })
+      .catch(() => null);
+    if (answer?.ok === true) {
+      daemonOkAt = Date.now();
+      proxyWasHealthy = true;
+      return;
     }
+    if (proxy === null) return;
+    if (answer?.ok === false && proxyWasHealthy) {
+      restartProxy('agent-device reported its daemon down after it had been up, so the session restarts it');
+    } else if (Date.now() - Math.max(daemonOkAt, proxyStartedAt) > DAEMON_GRACE_MS) {
+      restartProxy(`agent-device answered no health check for ${DAEMON_GRACE_MS / 1000}s, so the session restarts it`);
+    }
+  }
+
+  function restartProxy(why: string): void {
+    noteDaemon(why);
+    const daemonLog = join(agentDeviceState, 'daemon.log');
+    if (existsSync(daemonLog)) for (const line of readFileSync(daemonLog, 'utf8').split('\n').filter((l) => l.trim() !== '').slice(-15)) noteDaemon(`daemon.log | ${line}`);
+    proxy?.kill('SIGTERM');
+  }
+
+  const daemonUp = (): boolean => proxy !== null && Date.now() - daemonOkAt < 3 * tickMs;
+
+  async function untilDaemonUp(): Promise<void> {
+    const deadline = Date.now() + DAEMON_WAIT_MS;
+    while (!daemonUp() && ending === null && Date.now() < deadline) await new Promise((done) => setTimeout(done, 250));
   }
 
   function runCommands(commands: readonly CommandLine[], stopped: () => boolean, tail: string[]): Promise<number> {
@@ -429,7 +453,7 @@ async function serve(env: NodeJS.ProcessEnv): Promise<void> {
 
   function health(): SessionHealth {
     const now = Date.now();
-    const daemon = proxy !== null && now - daemonOkAt < 3 * tickMs;
+    const daemon = daemonUp();
     return {
       core,
       device: device === null ? null : { id: deviceId, name: deviceName, ready: existsSync(join(work, 'device-ready')) },
@@ -584,6 +608,11 @@ async function serve(env: NodeJS.ProcessEnv): Promise<void> {
       return;
     }
     if (!isAgentRoute(url.pathname)) return json(res, 404, { error: `no route ${url.pathname}` });
+    if (url.pathname.endsWith('/health') || daemonUp()) return forwardToAgentDevice(req, res);
+    void untilDaemonUp().then(() => forwardToAgentDevice(req, res));
+  });
+
+  function forwardToAgentDevice(req: IncomingMessage, res: ServerResponse): void {
     if (proxy === null) return json(res, 503, { error: 'agent-device is not up yet' });
     const upstream = http.request({ host: '127.0.0.1', port: agentPort, method: req.method, path: req.url, headers: forwarded(req) }, (up) => {
       res.writeHead(up.statusCode ?? 502, up.headers);
@@ -594,7 +623,7 @@ async function serve(env: NodeJS.ProcessEnv): Promise<void> {
       res.end(JSON.stringify({ error: `agent-device is unreachable: ${error.message}` }));
     });
     req.pipe(upstream);
-  });
+  }
 
   setInterval(() => {
     if (ending !== null) return;
