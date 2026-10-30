@@ -64,6 +64,7 @@ export async function reportToGitHub({ record, failures, packageDir }: GitHubRep
       reportPath: files[0],
       artifactsRoot: join(dirname(files[0]!), 'artifacts'),
       aiTracePath: undefined,
+      traces: new Map(),
     };
     const rows = await github({ key: record.platform }).onRunFinished!(run, AbortSignal.timeout(POST_TIMEOUT_MS));
     return (rows ?? []).map((row) => row.text);
