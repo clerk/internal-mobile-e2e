@@ -71,7 +71,7 @@ async function invoke(agent: Parameters<typeof invokeE2E>[4]): Promise<{ readonl
 describe('no agent without a gateway key', () => {
   it('composes a config with no agent', () => {
     const config = composeE2EConfig(IOS_APP, TARGET, {});
-    assert.deepEqual(Object.keys(config).sort(), ['assertionTimeout', 'targets', 'tests', 'timeout', 'trace', 'workers']);
+    assert.deepEqual(Object.keys(config).sort(), ['assertionTimeout', 'targets', 'tests', 'timeout', 'workers']);
     assert.equal(config.agents, undefined);
     assert.equal(composeE2EConfig(IOS_APP, TARGET, { AI_GATEWAY_API_KEY: '  ' }).agents, undefined, 'a blank key is no key');
   });
@@ -103,7 +103,7 @@ describe('no agent without a gateway key', () => {
       "try { composeE2EConfig(app, target, { AI_GATEWAY_API_KEY: 'x'.repeat(24) }); console.log('composed an agent'); } catch (error) { console.log(error.message); }",
     ].join('\n');
     const printed = execFileSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' }).trim().split('\n');
-    assert.deepEqual(printed, ['assertionTimeout,targets,tests,timeout,trace,workers', 'ai is not installed']);
+    assert.deepEqual(printed, ['assertionTimeout,targets,tests,timeout,workers', 'ai is not installed']);
   });
 
   it('tells doctor that no agent is configured, as a passing check', () => {

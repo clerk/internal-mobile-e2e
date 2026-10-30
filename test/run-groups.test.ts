@@ -137,8 +137,8 @@ fs.appendFileSync('order.log', 'e2e opens the app with no arguments\\n');
     const passed = seeded.ok && !plan.password && launchRefused === null;
     if (launchRefused !== null) body.message = launchRefused;
     const shot = 'ios/' + index + '/attempt-0/screenshots/001-home.png';
-    fs.mkdirSync(path.dirname(path.join(output, 'artifacts', shot)), { recursive: true });
-    fs.writeFileSync(path.join(output, 'artifacts', shot), path.basename(output));
+    fs.mkdirSync(path.dirname(path.join(output, 'results', shot)), { recursive: true });
+    fs.writeFileSync(path.join(output, 'results', shot), path.basename(output));
     results.push({
       id: path.basename(output) + '-' + index + '-0000', kind: 'test', titlePath: ['a test of ' + path.basename(file)], file, platform: 'ios', tags: [],
       status: passed ? 'passed' : 'failed',

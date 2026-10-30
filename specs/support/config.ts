@@ -52,7 +52,6 @@ export function composeE2EConfig(app: TestApp, target: Target, env: Env): E2ECon
     workers: 1,
     timeout: TEST_TIMEOUT_MS,
     assertionTimeout: ASSERTION_TIMEOUT_MS,
-    trace: 'off',
     ...agentConfig(env),
   };
 }

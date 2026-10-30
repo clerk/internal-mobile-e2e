@@ -200,9 +200,11 @@ function platformSkip(reason: string | undefined): string {
 
 const titleOf = (result: WireResult): string => (result.titlePath ?? []).join(' > ');
 
+const RESULT_DIGEST_CHARS = 16;
+
 export function parseE2EReport(reportJson: unknown, specs: readonly SpecRef[], outputDir: EvidencePath): readonly SpecResult[] {
-  const failuresDir = join(outputDir, 'failures');
-  const pages = existsSync(failuresDir) ? readdirSync(failuresDir) : [];
+  const resultsDir = join(outputDir, 'results');
+  const testDirs = existsSync(resultsDir) ? readdirSync(resultsDir) : [];
   const selected = new Set(specs.map((s) => s.path));
   return wireResults(reportJson)
     .filter((r) => (r.kind === 'test' || r.kind === 'setup') && selected.has(r.file ?? ''))
@@ -213,10 +215,11 @@ export function parseE2EReport(reportJson: unknown, specs: readonly SpecRef[], o
       const shown = attempts.findLast((attempt) => attempt.error !== undefined) ?? attempts.at(-1);
       const notRun = r.status === 'skipped' && r.skip?.cause !== 'filtered' && r.skip?.cause !== 'platform-unavailable';
       const status = notRun ? 'failed' : (STATUS[r.status ?? ''] ?? 'failed');
-      const page = r.id === undefined ? undefined : pages.find((p) => p.endsWith(`-${r.id!.slice(0, 8)}.md`));
+      const testDir = r.id === undefined ? undefined : testDirs.find((d) => d.endsWith(`-${r.id!.slice(0, RESULT_DIGEST_CHARS)}`));
+      const page = testDir === undefined ? undefined : join(resultsDir, testDir, 'trace.md');
       const artifactPath = (id: string | undefined): EvidencePath | null => {
         const path = id === undefined ? undefined : shown?.artifacts?.find((a) => a.id === id)?.path;
-        return path === undefined ? null : (join(outputDir, 'artifacts', path) as EvidencePath);
+        return path === undefined ? null : (join(resultsDir, path) as EvidencePath);
       };
       const screenPath = artifactPath(shown?.failure?.screen);
       let skipReason: string | null = null;
@@ -237,7 +240,7 @@ export function parseE2EReport(reportJson: unknown, specs: readonly SpecRef[], o
         skipReason,
         skippedBy,
         tags: r.tags ?? [],
-        failurePage: page === undefined ? null : (join(failuresDir, page) as EvidencePath),
+        failurePage: page !== undefined && existsSync(page) ? (page as EvidencePath) : null,
         failureScreen: screenPath !== null && existsSync(screenPath) ? (screenPath as EvidencePath) : null,
         failureScreenshot: artifactPath(shown?.failure?.screenshot),
       };
@@ -254,7 +257,7 @@ export function collectScreenshots(reportJson: unknown, runDir: EvidencePath, ou
         if (artifact.kind !== 'screenshot' || artifact.path === undefined) continue;
         const step = artifact.producer?.stepId === undefined ? undefined : steps.get(artifact.producer.stepId);
         if (step?.api !== 'app.screenshot' || !step.label) continue;
-        const source = join(outputDir, 'artifacts', artifact.path);
+        const source = join(outputDir, 'results', artifact.path);
         if (!existsSync(source)) continue;
         const label = step.label.replace(/[^A-Za-z0-9._-]/g, '-');
         mkdirSync(dir, { recursive: true });
