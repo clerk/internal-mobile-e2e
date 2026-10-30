@@ -82,7 +82,7 @@ describe('parseE2EReport', () => {
         },
         {
           id: 'cccccccc33', kind: 'test', titlePath: ['fails'], file: 'specs/explored/probe.e2e.ts', platform: 'ios', status: 'timed-out',
-          attempts: [{ status: 'timed-out', durationMs: 5000, error: { message: 'expect.toBeVisible failed\nobserved: no node' }, failure: { screen: 'art-1', screenshot: 'art-2' }, artifacts: [{ id: 'art-1', kind: 'other', path: 'ios/p/attempt-0/screen.txt' }, { id: 'art-2', kind: 'screenshot', path: 'ios/p/attempt-0/screenshots/001-failure.png' }] }],
+          attempts: [{ status: 'timed-out', durationMs: 5000, error: { message: 'expect.toBeVisible failed\nobserved: no node' }, failure: { screen: 'art-1', screenshot: 'art-2' }, artifacts: [{ id: 'art-1', kind: 'other', path: 'probe-fails-cccccccc33/attempt-0/screen.txt' }, { id: 'art-2', kind: 'screenshot', path: 'probe-fails-cccccccc33/attempt-0/screenshots/001-failure.png' }] }],
         },
       ],
     },
@@ -90,10 +90,9 @@ describe('parseE2EReport', () => {
 
   it('keeps the failed attempt of a test that passed on a retry: its error, its failure page, and its screenshot', () => {
     const dir = e2eOutputDir(mkdtempSync(join(tmpdir(), 'verify-report-')) as EvidencePath, 0);
-    mkdirSync(join(dir, 'failures'), { recursive: true });
-    writeFileSync(join(dir, 'failures', 'specs_features_auth-start_opens-opens-eeeeeeee.md'), '');
-    mkdirSync(join(dir, 'artifacts', 'ios/o/attempt-0'), { recursive: true });
-    writeFileSync(join(dir, 'artifacts', 'ios/o/attempt-0/screen.txt'), '');
+    mkdirSync(join(dir, 'results', 'opens-eeeeeeee55', 'attempt-0'), { recursive: true });
+    writeFileSync(join(dir, 'results', 'opens-eeeeeeee55', 'trace.md'), '');
+    writeFileSync(join(dir, 'results', 'opens-eeeeeeee55', 'attempt-0', 'screen.txt'), '');
     const attempt = (path: string) => ({ failure: { screen: 'screen', screenshot: 'shot' }, artifacts: [{ id: 'screen', kind: 'other', path: `${path}/screen.txt` }, { id: 'shot', kind: 'screenshot', path: `${path}/screenshots/001-failure.png` }] });
     const retried = (status: string, second: object) => ({
       schemaVersion: 'report-1',
@@ -101,7 +100,7 @@ describe('parseE2EReport', () => {
         results: [
           {
             id: 'eeeeeeee55', kind: 'test', titlePath: ['opens'], file: 'specs/features/auth-start/opens.e2e.ts', platform: 'ios', tags: [], status,
-            attempts: [{ status: 'failed', durationMs: 4000, error: { message: 'tap failed\nthe runner session ended' }, ...attempt('ios/o/attempt-0') }, { durationMs: 6000, ...second }],
+            attempts: [{ status: 'failed', durationMs: 4000, error: { message: 'tap failed\nthe runner session ended' }, ...attempt('opens-eeeeeeee55/attempt-0') }, { durationMs: 6000, ...second }],
           },
         ],
       },
@@ -113,25 +112,24 @@ describe('parseE2EReport', () => {
     assert.equal(flaky!.attempts, 2);
     assert.equal(flaky!.seconds, 10);
     assert.equal(flaky!.error, 'tap failed; the runner session ended');
-    assert.equal(flaky!.failurePage, join(dir, 'failures', 'specs_features_auth-start_opens-opens-eeeeeeee.md'));
-    assert.equal(flaky!.failureScreen, join(dir, 'artifacts', 'ios/o/attempt-0/screen.txt'));
-    assert.equal(flaky!.failureScreenshot, join(dir, 'artifacts', 'ios/o/attempt-0/screenshots/001-failure.png'));
+    assert.equal(flaky!.failurePage, join(dir, 'results', 'opens-eeeeeeee55', 'trace.md'));
+    assert.equal(flaky!.failureScreen, join(dir, 'results', 'opens-eeeeeeee55/attempt-0/screen.txt'));
+    assert.equal(flaky!.failureScreenshot, join(dir, 'results', 'opens-eeeeeeee55/attempt-0/screenshots/001-failure.png'));
 
-    const [failed] = parseE2EReport(retried('failed', { status: 'failed', error: { message: 'tap failed again' }, ...attempt('ios/o/attempt-1') }), opens, dir);
+    const [failed] = parseE2EReport(retried('failed', { status: 'failed', error: { message: 'tap failed again' }, ...attempt('opens-eeeeeeee55/attempt-1') }), opens, dir);
     assert.equal(failed!.status, 'failed');
     assert.equal(failed!.attempts, 2);
     assert.equal(failed!.error, 'tap failed again', 'a test that fails every attempt shows its last one');
-    assert.equal(failed!.failureScreenshot, join(dir, 'artifacts', 'ios/o/attempt-1/screenshots/001-failure.png'));
+    assert.equal(failed!.failureScreenshot, join(dir, 'results', 'opens-eeeeeeee55/attempt-1/screenshots/001-failure.png'));
   });
 
   it('maps statuses, skip reasons, errors, and failure pages, in the directory its invocation wrote to', () => {
     const run = mkdtempSync(join(tmpdir(), 'verify-report-')) as EvidencePath;
     const dir = e2eOutputDir(run, 1);
     assert.equal(dir, join(run, 'e2e-2'));
-    mkdirSync(join(dir, 'failures'), { recursive: true });
-    writeFileSync(join(dir, 'failures', 'specs_explored_probe-fails-cccccccc.md'), '');
-    mkdirSync(join(dir, 'artifacts', 'ios/p/attempt-0'), { recursive: true });
-    writeFileSync(join(dir, 'artifacts', 'ios/p/attempt-0/screen.txt'), '');
+    mkdirSync(join(dir, 'results', 'probe-fails-cccccccc33', 'attempt-0'), { recursive: true });
+    writeFileSync(join(dir, 'results', 'probe-fails-cccccccc33', 'trace.md'), '');
+    writeFileSync(join(dir, 'results', 'probe-fails-cccccccc33', 'attempt-0', 'screen.txt'), '');
     const results = parseE2EReport(report, ['specs/features/auth-start/opens.e2e.ts', 'specs/features/sign-up/complete.e2e.ts', 'specs/features/sign-up/request-code.e2e.ts', 'specs/explored/probe.e2e.ts'].map((path) => ({ kind: 'committed', path, feature: null })), dir);
     assert.deepEqual(results.map((r) => r.status), ['passed', 'skipped', 'skipped', 'failed', 'failed']);
     assert.equal(results[3]!.error, 'not run: infrastructure-unavailable the device could not be opened');
@@ -142,11 +140,12 @@ describe('parseE2EReport', () => {
     assert.equal(results[2]!.skipReason, 'skipped: ios only', 'a platform-scoped spec is skipped, not failed');
     assert.equal(results[2]!.skippedBy, 'platform');
     assert.equal(results[4]!.error, 'expect.toBeVisible failed; observed: no node');
-    assert.equal(results[4]!.failureScreen, join(dir, 'artifacts', 'ios/p/attempt-0/screen.txt'));
-    assert.equal(results[4]!.failureScreenshot, join(dir, 'artifacts', 'ios/p/attempt-0/screenshots/001-failure.png'), 'the full path, never truncated');
+    assert.equal(results[4]!.failureScreen, join(dir, 'results', 'probe-fails-cccccccc33/attempt-0/screen.txt'));
+    assert.equal(results[4]!.failureScreenshot, join(dir, 'results', 'probe-fails-cccccccc33/attempt-0/screenshots/001-failure.png'), 'the full path, never truncated');
     const selected = parseE2EReport(report, [{ kind: 'committed', path: 'specs/features/auth-start/opens.e2e.ts', feature: null }], dir);
     assert.deepEqual(selected.map((r) => r.spec.path), ['specs/features/auth-start/opens.e2e.ts', 'specs/features/auth-start/opens.e2e.ts'], 'files e2e lists but the run did not select are dropped');
-    assert.equal(results[4]!.failurePage, join(dir, 'failures', 'specs_explored_probe-fails-cccccccc.md'));
+    assert.equal(results[4]!.failurePage, join(dir, 'results', 'probe-fails-cccccccc33', 'trace.md'));
+    assert.equal(results[0]!.failurePage, null, 'a passed test keeps a results directory but no trace page');
   });
 
   it('reports a test that --max-failures stopped before it started as failed and not run, never as passed or skipped', () => {
@@ -178,8 +177,8 @@ describe('parseE2EReport', () => {
   it('copies app.screenshot artifacts under their labels with the test that took each, a later group replacing an earlier one with the same label', () => {
     const dir = mkdtempSync(join(tmpdir(), 'verify-shots-')) as EvidencePath;
     for (const [index, bytes] of [[0, 'first'], [1, 'second']] as const) {
-      mkdirSync(join(e2eOutputDir(dir, index), 'artifacts', 'ios/x/attempt-0/screenshots'), { recursive: true });
-      writeFileSync(join(e2eOutputDir(dir, index), 'artifacts', 'ios/x/attempt-0/screenshots/001-auth.png'), bytes);
+      mkdirSync(join(e2eOutputDir(dir, index), 'results', 'ios/x/attempt-0/screenshots'), { recursive: true });
+      writeFileSync(join(e2eOutputDir(dir, index), 'results', 'ios/x/attempt-0/screenshots/001-auth.png'), bytes);
       assert.deepEqual(collectScreenshots(report, dir, e2eOutputDir(dir, index)), [{ label: 'auth', path: join(dir, 'screenshots', 'auth.png'), test: { spec: 'specs/features/auth-start/opens.e2e.ts', title: 'opens' } }]);
       assert.equal(readFileSync(join(dir, 'screenshots', 'auth.png'), 'utf8'), bytes);
     }

@@ -62,7 +62,7 @@ export async function reportToGitHub({ record, failures, packageDir }: GitHubRep
       exitCode: report.run.exitCode,
       projectRoot: packageDir,
       reportPath: files[0],
-      artifactsRoot: join(dirname(files[0]!), 'artifacts'),
+      artifactsRoot: join(dirname(files[0]!), 'results'),
       aiTracePath: undefined,
       traces: new Map(),
     };
