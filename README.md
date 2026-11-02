@@ -56,6 +56,36 @@ import { app } from './app.ts';
 export const { test, expect, CLERK_TEST_CODE } = createTest(app);
 ```
 
+## Changing instance settings in a test
+
+Every run starts on the settings in `src/core/instances/base.json`. To change instance settings for one test, call `host.useSettings` with the Platform API config leaves to change. Name each leaf by its full dotted path.
+
+```ts
+test('asks for MFA during sign-up', async ({ host }) => {
+  await host.useSettings({
+    config: { 'auth_multi_factor.required_for_sign_up': true },
+    environment: { 'user_settings.sign_up.mfa.required': true },
+  });
+  await host.launch();
+});
+```
+
+The CLI reads the current value of each leaf, makes the change, and waits until the instance's public `/v1/environment` shows it. The `environment` field is optional. With it, the CLI waits for exactly those leaves, and the call fails if they do not show the change within 15 seconds. Without it, the CLI waits for any leaf of the environment to change and records the leaves that did.
+
+To turn a setting off, pass its off value. To change settings for every test in a file, call `host.useSettings` in `test.beforeEach`.
+
+When the test ends, pass or fail, the CLI puts each leaf back to the value it read before the change. If the test process stops before it restores them, the CLI restores them after e2e exits. If the CLI stops too, the next `run` or `up` restores them before it does anything else. `run.json` lists each change under `settings`, and `attach` refuses a run that left a change unrestored.
+
+To find the name and current value of a leaf, run the `settings` verb with a prefix:
+
+```sh
+bin/control-clerk-ios settings auth_multi_factor
+```
+
+Each line it prints, such as `"auth_multi_factor.required_for_sign_up": false,`, pastes into `config`. The verb reads the application this worktree holds and needs no device.
+
+## Changing the core
+
 To change the core, open a PR here and point an SDK repo's PR at the unmerged commit to try it. Merge here, then bump the commit pin in each SDK repo.
 
 For local development, use Node 24.8 or later within Node 24.
