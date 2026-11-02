@@ -3,7 +3,6 @@ import { basename, dirname, join } from 'node:path';
 import { isOrphaned, readClaims } from './claims.ts';
 import { check, type Driving, type Instances } from './instances/instances.ts';
 import { agentCheck, type AgentSource } from './agent.ts';
-import type { Agent } from '../../specs/support/agent.ts';
 import { runPassword } from '../../specs/support/clerk.ts';
 import { withoutClerkKeys } from './keys.ts';
 import { supportsNode } from './launch.mjs';
@@ -13,8 +12,8 @@ import { installedPackageVersion, packageDirectoryFromModule, resolvePackageBina
 import type { Inputs, Target } from '../../specs/support/inputs.ts';
 import { backendFor, computeBuildKey, describeChoice, deviceOf, ensureLease, leaseLine, leaseView, readBuiltApp, releaseLease, selectBackend, type BackendChoice, type LeaseOutcome } from './devices.ts';
 import { assertSomethingRan, collectScreenshots, e2eOutputDir, invokeE2E, parseE2EReport, planE2E, resolveSpecs } from './e2e.ts';
-import { startBroker, type Broker } from './broker.ts';
-import { watchDriver, type DriverWatch } from './driver.ts';
+import { startBroker } from './broker.ts';
+import { watchDriver } from './driver.ts';
 import { assertPublishable, assertShowable, loggedUserIds, readRecord, sealEvidence, type Showable } from './evidence.ts';
 import { protectGitHubTokens, reportToGitHub } from './github-report.ts';
 import { isRunning, type Runner } from './exec.ts';
@@ -333,6 +332,15 @@ interface Invoked {
   readonly unrestored: VerifyFailure | null;
 }
 
+async function afterE2E(driving: Driving, exitCode: number, unrestored: VerifyFailure | null): Promise<Invoked> {
+  if (unrestored !== null) return { exitCode, standard: false, unread: null, unrestored };
+  try {
+    return { exitCode, standard: await driving.stillStandard(), unread: null, unrestored };
+  } catch (error) {
+    return { exitCode, standard: false, unread: (error as Error).message ?? String(error), unrestored };
+  }
+}
+
 export async function runVerb(deps: Deps, command: Extract<Command, { verb: 'run' }>): Promise<RunResult> {
   const { host, workspace } = deps;
   const platform = platformOf(host, command.platform);
@@ -408,16 +416,7 @@ export async function runVerb(deps: Deps, command: Extract<Command, { verb: 'run
         } finally {
           const unrestored = await drove.restore().then(() => null, asFailure);
           settings = drove.changes();
-          if (exitCode !== null) {
-            const ended = exitCode;
-            invoked =
-              unrestored !== null
-                ? { exitCode: ended, standard: false, unread: null, unrestored }
-                : await drove.stillStandard().then(
-                    (standard) => ({ exitCode: ended, standard, unread: null, unrestored }),
-                    (error: unknown) => ({ exitCode: ended, standard: false, unread: (error as Error).message ?? String(error), unrestored }),
-                  );
-          }
+          if (exitCode !== null) invoked = await afterE2E(drove, exitCode, unrestored);
           driving = null;
           await drove.release();
         }

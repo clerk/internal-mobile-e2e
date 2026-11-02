@@ -303,26 +303,34 @@ export async function startBroker(run: RunId, workspace: Workspace, scratch: Scr
   const cliCallFor = (method: string | undefined, path: string): CliCall | undefined =>
     (Object.keys(CLI_CALLS) as CliCall[]).find((call) => CLI_CALLS[call].method === method && `${STAND_IN_PATH}${CLI_CALLS[call].path}` === path);
 
-  async function answer(request: IncomingMessage): Promise<Answer> {
-    const url = new URL(request.url ?? '/', 'http://127.0.0.1');
-    const cli = cliCallFor(request.method, url.pathname);
-    const found = cli === undefined ? guardFor(request.method, url.pathname) : undefined;
-    if (cli === undefined && found === undefined) return clerkError(404, 'verify_stand_in_unknown_call', `the verify CLI's stand-in for the Backend API has no ${request.method} ${url.pathname}; the tests make ${Object.values(BACKEND_CALLS).map((call) => `${call.method} ${call.path}`).join(', ')}`);
+  async function bodyOf(request: IncomingMessage): Promise<{ readonly body: Record<string, unknown> } | { readonly refusal: Answer }> {
     let text = '';
     for await (const chunk of request) {
       text += chunk;
-      if (text.length > BODY_LIMIT_BYTES) return refused('its body is larger than any request the tests make');
+      if (text.length > BODY_LIMIT_BYTES) return { refusal: refused('its body is larger than any request the tests make') };
     }
-    let body: Record<string, unknown>;
     try {
       const parsed: unknown = text.length > 0 ? JSON.parse(text) : {};
-      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return refused('its body is not a JSON object');
-      body = parsed as Record<string, unknown>;
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return { refusal: refused('its body is not a JSON object') };
+      return { body: parsed as Record<string, unknown> };
     } catch {
-      return refused('its body is not JSON');
+      return { refusal: refused('its body is not JSON') };
     }
-    if (cli !== undefined) return cliHandlers[cli](body);
-    const { guard, params } = found!;
+  }
+
+  async function answer(request: IncomingMessage): Promise<Answer> {
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    const cli = cliCallFor(request.method, url.pathname);
+    if (cli !== undefined) {
+      const read = await bodyOf(request);
+      return 'refusal' in read ? read.refusal : cliHandlers[cli](read.body);
+    }
+    const found = guardFor(request.method, url.pathname);
+    if (found === undefined) return clerkError(404, 'verify_stand_in_unknown_call', `the verify CLI's stand-in for the Backend API has no ${request.method} ${url.pathname}; the tests make ${Object.values(BACKEND_CALLS).map((call) => `${call.method} ${call.path}`).join(', ')}`);
+    const read = await bodyOf(request);
+    if ('refusal' in read) return read.refusal;
+    const { body } = read;
+    const { guard, params } = found;
     const asked: Asked = { params, query: url.searchParams, body };
     const why = await guard.refuses(asked);
     if (why !== null) return refused(why);
