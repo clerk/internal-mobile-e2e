@@ -74,6 +74,8 @@ The CLI reads the current value of each leaf, makes the change, and waits until 
 
 To turn a setting off, pass its off value.
 
+Clerk's servers apply a change at once, so a session task that the change requires appears without a relaunch. The SDK's screens can still show the settings that the app read when it launched. On Android, the setup-MFA task kept offering an authenticator app that a test turned off after launch, until the app launched again. iOS showed the change at once. Call `host.launch()` after `host.useSettings`, as in the example above, unless the test is about an app that is already running.
+
 When the test ends, pass or fail, the CLI puts each leaf back to the value it read before the change. If the test process stops before it restores them, the CLI restores them after e2e exits. If the CLI stops too, the next `run` or `up` restores them before it does anything else. `run.json` lists each change under `settings`, and `attach` refuses a run that left a change unrestored.
 
 To find the name and current value of a leaf, run the `settings` verb with a prefix:
