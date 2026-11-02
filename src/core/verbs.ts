@@ -53,6 +53,7 @@ import {
   type ScratchPath,
   type ScreenNode,
   type ScreenResult,
+  type SettingsResult,
   type SpecRef,
   type SpecResult,
   type UpResult,
@@ -775,4 +776,8 @@ async function downUnlocked(deps: Deps, command: Extract<Command, { verb: 'down'
   };
 }
 
-export const verbs = { doctor, up, run: runVerb, screen, attach, down } as const;
+export async function settings(deps: Deps, command: Extract<Command, { verb: 'settings' }>): Promise<SettingsResult> {
+  return { verb: 'settings', ...(await deps.instances.liveConfig(command.prefixes)) };
+}
+
+export const verbs = { doctor, up, run: runVerb, screen, attach, down, settings } as const;

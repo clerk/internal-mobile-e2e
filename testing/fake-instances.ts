@@ -19,6 +19,7 @@ export function heldInstances(fake: FakeHeld = {}): Instances {
     keys: notDriving,
     clerk: notDriving,
     stopDriving: async () => undefined,
+    liveConfig: async () => notDriving(),
     finish: async (ledger, options) => (await fake.finish?.(ledger, options)) ?? [],
     doctorChecks: async () => [],
   };

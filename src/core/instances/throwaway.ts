@@ -109,6 +109,12 @@ export interface Inspection {
   readonly found: EnvironmentComparison | 'gone';
 }
 
+export interface LiveConfig {
+  readonly application: { readonly id: string; readonly name: string };
+  readonly pending: readonly string[] | null;
+  readonly config: Leaves;
+}
+
 export interface Throwaway {
   held(): HeldApplication | null;
   ensure(progress: (line: string) => void): Promise<{ readonly views: readonly InstanceView[]; readonly created: HeldApplication | null }>;
@@ -117,6 +123,7 @@ export interface Throwaway {
   restore(progress: (line: string) => void): Promise<readonly string[]>;
   stopDriving(): void;
   inspect(): Promise<Inspection | null>;
+  liveConfig(prefixes: readonly string[]): Promise<LiveConfig>;
   finish(ledger: Workspace, progress: (line: string) => void): Promise<readonly ApplicationView[]>;
 }
 
@@ -583,6 +590,20 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
     async restore(progress) {
       const app = pool().held;
       return app === null ? [] : restore(app, progress);
+    },
+
+    async liveConfig(prefixes) {
+      const app = pool().held;
+      if (app === null) throw new VerifyFailure('NOT_READY', 'this worktree holds no application', '{cli} up');
+      const state = readState(workspace, app.entry.name);
+      const open = await platform.open();
+      const config = configLeaves(await open.readConfig(refOf(app), [...new Set(prefixes.map((prefix) => prefix.split('.')[0]!))]));
+      const wanted = (leaf: string): boolean => prefixes.length === 0 || prefixes.some((prefix) => leaf === prefix || leaf.startsWith(`${prefix}.`));
+      return {
+        application: { id: app.record.application, name: app.entry.name },
+        pending: state.known ? Object.keys(state.pending?.config ?? {}) : null,
+        config: Object.fromEntries(Object.entries(config).filter(([leaf]) => wanted(leaf)).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
+      };
     },
 
     stopDriving() {

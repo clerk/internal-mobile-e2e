@@ -66,7 +66,8 @@ export type Command =
     }
   | { readonly verb: 'screen'; readonly platform?: Platform; readonly png: boolean }
   | { readonly verb: 'attach'; readonly run: RunId; readonly pr: number; readonly media: MediaChoice; readonly before: RunId | null }
-  | { readonly verb: 'down'; readonly platform?: Platform; readonly stale: boolean; readonly dryRun: boolean };
+  | { readonly verb: 'down'; readonly platform?: Platform; readonly stale: boolean; readonly dryRun: boolean }
+  | { readonly verb: 'settings'; readonly prefixes: readonly string[] };
 
 export type Verb = Command['verb'];
 export type RunCommand = Extract<Command, { verb: 'run' }>;
@@ -233,7 +234,14 @@ export interface DeletionTarget {
   readonly name: string;
 }
 
-export type VerbResult = DoctorReport | UpResult | RunResult | ScreenResult | AttachResult | DownResult;
+export interface SettingsResult {
+  readonly verb: 'settings';
+  readonly application: { readonly id: string; readonly name: string };
+  readonly pending: readonly string[] | null;
+  readonly config: { readonly [leaf: string]: Json };
+}
+
+export type VerbResult = DoctorReport | UpResult | RunResult | ScreenResult | AttachResult | DownResult | SettingsResult;
 
 export type SpecKind = 'committed' | 'explored';
 export interface SpecRef {

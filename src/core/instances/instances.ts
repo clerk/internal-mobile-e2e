@@ -9,7 +9,7 @@ import type { SettingsRequest } from '../../../specs/support/types.ts';
 import { VerifyFailure, type ApplicationView, type DoctorCheck, type InstanceView, type ProcessRef, type SettingsChangeRecord } from '../types.ts';
 import { createPlatform, describeCredential, type Platform } from './platform.ts';
 import { STANDARD_FILE, describeDifference } from './settings.ts';
-import { createThrowaway, openApplications, standingLabel, type Changed, type HeldApplication, type Throwaway } from './throwaway.ts';
+import { createThrowaway, openApplications, standingLabel, type Changed, type HeldApplication, type LiveConfig, type Throwaway } from './throwaway.ts';
 
 export interface Driving {
   readonly keys: InstanceKeys;
@@ -28,6 +28,7 @@ export interface Instances {
   keys(): InstanceKeys;
   clerk(): ClerkBackend;
   stopDriving(): Promise<void>;
+  liveConfig(prefixes: readonly string[]): Promise<LiveConfig>;
   finish(ledger: Workspace, options: { readonly keepApplications: boolean }, progress: (line: string) => void): Promise<readonly ApplicationView[]>;
   doctorChecks(options: { readonly live: boolean }, progress: (line: string) => void): Promise<readonly DoctorCheck[]>;
 }
@@ -216,6 +217,8 @@ export function createInstances(deps: InstancesDeps): Instances {
     },
 
     stopDriving: () => locked(throwaway.stopDriving),
+
+    liveConfig: (prefixes) => throwaway.liveConfig(prefixes),
 
     finish: (ledger, options, progress) => (ledger.root === workspace.root ? locked(() => finish(ledger, options, progress)) : finish(ledger, options, progress)),
 

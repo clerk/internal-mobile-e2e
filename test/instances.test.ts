@@ -18,7 +18,7 @@ import { withoutClerkKeys } from '../src/core/keys.ts';
 import { finishOrphanLedgers } from '../src/core/ledgers.ts';
 import { createOutput, takePlatformKey } from '../src/core/cli.ts';
 import { Secret, redact } from '../specs/support/secret.ts';
-import { down, type Deps } from '../src/core/verbs.ts';
+import { down, settings, type Deps } from '../src/core/verbs.ts';
 import { newEntryId, openWorkspace, takeSlotLock } from '../src/core/workspace.ts';
 import { RETRYABLE, VerifyFailure, type DeviceBackend, type HostAdapter, type InstanceView, type Json, type LocalLease, type PublishableKey, type ScratchPath } from '../src/core/types.ts';
 import { OUTSIDE_BASE, PLATFORM_KEY, PLATFORM_SCOPES, SECRET_KEY_SCOPE, WORKSPACE, fakeClerk, type FakeClerkOptions } from '../testing/fake-clerk.ts';
@@ -1066,6 +1066,49 @@ describe('changing settings in a test', () => {
     assert.equal(application.deleted, true);
     assert.deepEqual(up.map((view) => view.created), [true]);
     assert.ok(w.lines.some((line) => line.startsWith(`instance ${application.id} retired (the settings a test changed could not be restored: `)), w.lines.join('\n'));
+  });
+});
+
+describe('the settings verb', () => {
+  const deps = (w: World): Deps => ({ host, workspace: w.workspace, runner: async () => assert.fail('settings runs no commands'), env: w.env, progress: w.say, instances: w.open(2000) });
+
+  it('prints the live config leaves of the held application under the prefixes it names, sorted, with no device leased', async () => {
+    const w = world();
+    await w.instances.ensure(quiet);
+    const application = w.clerk.live()[0]!;
+    assert.equal(w.workspace.readLease('ios'), null);
+    const before = w.clerk.platformRequests().length;
+    const result = await settings(deps(w), { verb: 'settings', prefixes: ['auth_multi_factor', 'restrictions.ignore_dots_for_gmail_addresses'] });
+    assert.deepEqual(result, {
+      verb: 'settings',
+      application: { id: application.id, name: application.name },
+      pending: [],
+      config: {
+        'auth_multi_factor.authenticator_app.enabled': true,
+        'auth_multi_factor.backup_code.enabled': true,
+        'auth_multi_factor.phone_code.enabled': true,
+        'auth_multi_factor.required_for_sign_in': false,
+        'auth_multi_factor.required_for_sign_up': false,
+        'restrictions.ignore_dots_for_gmail_addresses': false,
+      },
+    });
+    assert.deepEqual(sentSince(w, before).filter((call) => call.includes('/config')), [`GET /applications/${application.id}/instances/${application.instanceId}/config?keys=auth_multi_factor&keys=restrictions`]);
+    assert.equal(writes(w).length, 2, 'it reads and changes nothing');
+    assert.equal(Object.keys((await settings(deps(w), { verb: 'settings', prefixes: [] })).config).length, Object.keys(configLeaves(application.config)).length, 'no prefix prints every leaf');
+  });
+
+  it('names the leaves a test changed that are not restored yet', async () => {
+    const w = world();
+    await w.instances.ensure(quiet);
+    await (await w.instances.drive()).useSettings({ config: { 'auth_multi_factor.required_for_sign_up': true } }, null);
+    const result = await settings(deps(w), { verb: 'settings', prefixes: ['auth_multi_factor.required_for_sign_up'] });
+    assert.deepEqual([result.pending, result.config], [['auth_multi_factor.required_for_sign_up'], { 'auth_multi_factor.required_for_sign_up': true }]);
+  });
+
+  it('refuses with up as the fix when the worktree holds no application', async () => {
+    const w = world();
+    await assert.rejects(settings(deps(w), { verb: 'settings', prefixes: [] }), { code: 'NOT_READY', message: 'this worktree holds no application', fix: '{cli} up' });
+    assert.deepEqual(w.clerk.requests, []);
   });
 });
 
