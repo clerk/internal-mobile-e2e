@@ -72,7 +72,7 @@ test('asks for MFA during sign-up', async ({ host }) => {
 
 The CLI reads the current value of each leaf, makes the change, and waits until the instance's public `/v1/environment` shows it. The `environment` field is optional. With it, the CLI waits for exactly those leaves, and the call fails if they do not show the change within 15 seconds. Without it, the CLI waits for any leaf of the environment to change and records the leaves that did.
 
-To turn a setting off, pass its off value. To change settings for every test in a file, call `host.useSettings` in `test.beforeEach`.
+To turn a setting off, pass its off value.
 
 When the test ends, pass or fail, the CLI puts each leaf back to the value it read before the change. If the test process stops before it restores them, the CLI restores them after e2e exits. If the CLI stops too, the next `run` or `up` restores them before it does anything else. `run.json` lists each change under `settings`, and `attach` refuses a run that left a change unrestored.
 

@@ -53,6 +53,7 @@ const LIFETIME_HOURS = { min: 2, max: 72 } as const;
 const REPLACE_WITHIN_MS = 60 * 60_000;
 const REAP_GRACE_MS = 5 * 60_000;
 const REAP_PER_COMMAND = 5;
+const REDACTED = 'REDACTED';
 const SHOWN_WITHIN_MS = 15_000;
 const KEYS_LISTED = 12;
 
@@ -155,8 +156,8 @@ const isLeaves = (value: unknown): value is Leaves => typeof value === 'object' 
 
 function snapshotOf(raw: unknown): Snapshot | null | undefined {
   if (raw === null) return null;
-  const { config, environment } = (raw ?? {}) as { config?: unknown; environment?: unknown };
-  return isLeaves(config) && isLeaves(environment) ? { config, environment } : undefined;
+  const { config, sections, environment } = (raw ?? {}) as { config?: unknown; sections?: unknown; environment?: unknown };
+  return isLeaves(config) && isLeaves(sections) && isLeaves(environment) ? { config, sections, environment } : undefined;
 }
 
 function readState(ledger: Workspace, name: string): ApplicationState {
@@ -399,7 +400,7 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
     if (declared !== null && compareLeaves(asShown(declared), before).length === 0) {
       throw new SettingsRefused(`${where} expects ${Object.keys(declared).join(', ')} to show the change, and the environment shows those values before it`, 'name environment leaves the change moves, or leave environment out and the CLI waits for any leaf to change');
     }
-    const pending = underneath(state.pending, { config: Object.fromEntries(changed.map((c) => [c.leaf, c.from])), environment: {} });
+    const pending = underneath(state.pending, { config: Object.fromEntries(changed.map((c) => [c.leaf, c.from])), sections: was, environment: {} });
     writeState(workspace, app.entry.name, { ...state, pending });
     const started = now();
     const answer = await open.configure(refOf(app), nest(request.config));
@@ -408,7 +409,7 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
     if (lost !== undefined) throw new VerifyFailure('INSTANCE_MISCONFIGURED', `Clerk accepted ${lost.leaf}=${JSON.stringify(lost.to)} for ${id} on a dry run, and its answer to the change holds ${JSON.stringify(stored[lost.leaf] ?? null)}`, 'rerun once; if it repeats, report this as a verify bug');
     const shown = await waitShown(app, declared, before, (unmet) => new SettingsNotShown(`${where} changed ${assigned(changed)} on ${id}, and ${seconds(SHOWN_WITHIN_MS, 0)} later the environment does not show it: ${unmet}`, 'correct environment to the leaves and values the change shows, or leave it out and the CLI waits for any leaf to change'));
     const wasShown = Object.fromEntries(shown.flatMap((leaf) => (Object.hasOwn(before, leaf) ? [[leaf, before[leaf]!]] : [])));
-    writeState(workspace, app.entry.name, { ...state, pending: underneath(pending, { config: {}, environment: wasShown }) });
+    writeState(workspace, app.entry.name, { ...state, pending: underneath(pending, { config: {}, sections: {}, environment: wasShown }) });
     progress(`settings ${assigned(changed)}  on ${id} for ${where}; the environment showed ${shown.length === 0 ? 'no change' : shown.join(', ')} ${seconds(now() - started, 1)} later`);
     if (shown.length === 0 && declared === null) progress(`settings no leaf of the public environment changed within ${seconds(SHOWN_WITHIN_MS, 0)}; if the app reads this setting, pass environment so the wait can check it`);
     return { changed, shown };
@@ -422,10 +423,12 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
     const id = app.record.application;
     const leaves = Object.keys(pending.config);
     const before = await shownLeaves(app);
-    const answer = await open.configure(refOf(app), nest(pending.config));
+    // Clerk moves other leaves of a section when one changes back: turning organizations on turns forced selection on.
+    const written = { ...pending.sections, ...pending.config };
+    const answer = await open.configure(refOf(app), nest(written));
     const stored = configLeaves(answer.after);
-    const lost = leaves.find((leaf) => !sameLeaf(stored[leaf], pending.config[leaf]));
-    if (lost !== undefined) throw new SettingsRefused(`Clerk accepted ${lost}=${JSON.stringify(pending.config[lost])} to restore ${id}, and its answer holds ${JSON.stringify(stored[lost] ?? null)}`, '{cli} up replaces the application');
+    const lost = Object.keys(written).find((leaf) => written[leaf] !== REDACTED && !sameLeaf(stored[leaf], written[leaf]));
+    if (lost !== undefined) throw new SettingsRefused(`Clerk accepted ${lost}=${JSON.stringify(written[lost])} to restore ${id}, and its answer holds ${JSON.stringify(stored[lost] ?? null)}`, '{cli} up replaces the application');
     const expected = Object.keys(pending.environment).length === 0 ? null : pending.environment;
     await waitShown(app, expected, before, (unmet) => new SettingsNotShown(`${id} was put back to ${assigned(leaves.map((leaf) => ({ leaf, to: pending.config[leaf]! })))}, and ${seconds(SHOWN_WITHIN_MS, 0)} later the environment does not show what it showed before: ${unmet}`, '{cli} up replaces the application'));
     writeState(workspace, app.entry.name, { ...state, pending: null });

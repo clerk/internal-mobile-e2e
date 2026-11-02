@@ -79,7 +79,7 @@ const platformCalls = (w: World) => w.clerk.platformRequests().map((request) => 
 const writes = (w: World) => w.clerk.platformRequests().filter((request) => request.method !== 'GET').map((request) => `${request.method} ${request.url.replace('api.clerk.com/v1/platform', '').replace(/\/instances\/ins_\w+/, '')}`);
 const patches = (w: World) => w.clerk.platformRequests().filter((request) => request.method === 'PATCH');
 const instancesDir = (w: World) => join(w.workspace.root, 'instances');
-const stateOf = (w: World, name: string) => JSON.parse(readFileSync(join(instancesDir(w), `${name}.state.json`), 'utf8')) as { baseKey?: string; pending?: { config: Record<string, Json>; environment: Record<string, Json> } | null; drivers: { pid: number }[] };
+const stateOf = (w: World, name: string) => JSON.parse(readFileSync(join(instancesDir(w), `${name}.state.json`), 'utf8')) as { baseKey?: string; pending?: { config: Record<string, Json>; sections: Record<string, Json>; environment: Record<string, Json> } | null; drivers: { pid: number }[] };
 const recorded = (w: World): string | null => {
   const [entry] = openApplications(w.workspace);
   if (entry === undefined || !existsSync(join(instancesDir(w), `${entry.name}.state.json`))) return null;
@@ -890,7 +890,12 @@ describe('changing settings in a test', () => {
   }
   const leaf = (w: World, name: string): Json | undefined => configLeaves(w.clerk.live()[0]!.config)[name];
   const shownLeaf = (w: World, name: string): Json | undefined => w.clerk.live()[0]!.environment[name];
-  const pendingOf = (w: World) => stateOf(w, w.clerk.live()[0]!.name).pending;
+  const pendingOf = (w: World) => {
+    const pending = stateOf(w, w.clerk.live()[0]!.name).pending;
+    if (pending === null || pending === undefined) return pending;
+    const { sections: _sections, ...shown } = pending;
+    return shown;
+  };
   const sentSinceChange = (w: World, before: number) => w.clerk.platformRequests().slice(before).filter((request) => request.method === 'PATCH').map((request) => [request.url.endsWith('?dry_run=true') ? 'dry run' : 'change', request.body]);
 
   it('turns a setting on for a test, and puts back exactly the value it read before', async () => {
@@ -931,6 +936,15 @@ describe('changing settings in a test', () => {
     assert.equal(leaf(w, GMAIL_DOTS), true);
     await driving.restore();
     assert.equal(leaf(w, GMAIL_DOTS), OUTSIDE_BASE[GMAIL_DOTS]);
+  });
+
+  it('puts back every leaf of a section, also one Clerk moves when the setting changes back', async () => {
+    const w = world();
+    const driving = await driven(w);
+    await driving.useSettings({ config: { 'organization_settings.enabled': false } }, null);
+    await driving.restore();
+    assert.deepEqual([leaf(w, 'organization_settings.enabled'), leaf(w, 'organization_settings.force_organization_selection')], [true, false]);
+    assert.equal(await driving.stillStandard(), true);
   });
 
   it('puts a leaf a test changed twice back to its value before the first change', async () => {

@@ -28,6 +28,7 @@ export interface LeafChange {
 
 export interface Snapshot {
   readonly config: Leaves;
+  readonly sections: Leaves;
   readonly environment: Leaves;
 }
 
@@ -119,7 +120,9 @@ export function nest(leaves: Leaves): JsonObject {
 }
 
 export const underneath = (pending: Snapshot | null, more: Snapshot): Snapshot =>
-  pending === null ? more : { config: { ...more.config, ...pending.config }, environment: { ...more.environment, ...pending.environment } };
+  pending === null
+    ? more
+    : { config: { ...more.config, ...pending.config }, sections: { ...more.sections, ...pending.sections }, environment: { ...more.environment, ...pending.environment } };
 
 const CONFIG_LEAF = /^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$/;
 const ENVIRONMENT_LEAF = /^[A-Za-z0-9_]+(\[\d+\])*(\.[A-Za-z0-9_]+(\[\d+\])*)*$/;

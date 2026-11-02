@@ -186,6 +186,8 @@ export function fakeClerk(options: FakeClerkOptions = {}) {
         return json(refusal.status, { errors: named.map((param) => ({ code: refusal.code, message: refusal.message, long_message: refusal.message, ...(param === undefined ? {} : { meta: { param_name: param } }) })) });
       }
       let after = merged(application.config, sent);
+      const turnsOrganizationsOn = leaves['organization_settings.enabled'] === true && configLeaves(application.config)['organization_settings.enabled'] === false;
+      if (turnsOrganizationsOn && !('organization_settings.force_organization_selection' in leaves)) after = merged(after, nested('organization_settings.force_organization_selection', true));
       for (const [path, value] of Object.entries(state.storesInstead)) if (path in leaves) after = merged(after, nested(path, value));
       const named = (from: JsonObject): JsonObject => Object.fromEntries(Object.keys(sent).flatMap((key) => (key in from ? [[key, from[key]!]] : [])));
       const reordered = (value: Json): Json => (Array.isArray(value) ? [...value].sort().reverse() : typeof value === 'object' && value !== null ? Object.fromEntries(Object.entries(value).map(([key, child]) => [key, reordered(child)])) : value);
