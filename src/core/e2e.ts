@@ -82,8 +82,8 @@ export function resolveSpecs(packageDir: string, selection: SpecSelection, cwd: 
   return [...found.values()];
 }
 
-export function e2eOutputDir(runDir: EvidencePath, index: number): EvidencePath {
-  return join(runDir, index === 0 ? 'e2e' : `e2e-${index + 1}`) as EvidencePath;
+export function e2eOutputDir(runDir: EvidencePath): EvidencePath {
+  return join(runDir, 'e2e') as EvidencePath;
 }
 
 export function planE2E(inputs: Inputs, specs: readonly SpecRef[], command: RunCommand, packageDir: string, outputDir: EvidencePath): E2EInvocation {

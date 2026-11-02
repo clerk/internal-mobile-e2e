@@ -33,7 +33,7 @@ describe('resolveSpecs', () => {
 
 describe('planE2E', () => {
   it('passes selection flags through and points output inside the run', () => {
-    const plan = planE2E(SAMPLE_INPUTS, [{ kind: 'committed', path: 'specs/features/a/b.e2e.ts', feature: null }], { verb: 'run', selection: { all: true }, grep: 'x', video: true, retries: 1, maxFailures: 5, githubReport: false, waitSeconds: 0 }, '/package', e2eOutputDir('/package/.verify/runs/r20261002-141210-7c1e' as EvidencePath, 0));
+    const plan = planE2E(SAMPLE_INPUTS, [{ kind: 'committed', path: 'specs/features/a/b.e2e.ts', feature: null }], { verb: 'run', selection: { all: true }, grep: 'x', video: true, retries: 1, maxFailures: 5, githubReport: false, waitSeconds: 0 }, '/package', e2eOutputDir('/package/.verify/runs/r20261002-141210-7c1e' as EvidencePath));
     assert.deepEqual(plan.args, [
       'run', 'specs/features/a/b.e2e.ts', '--config', 'e2e.config.ts', '--target', 'ios',
       '--output', '.verify/runs/r20261002-141210-7c1e/e2e', '--reporter', 'list,markdown,junit', '--retries', '1',
@@ -51,11 +51,11 @@ describe('planE2E', () => {
       AGENT_DEVICE_STATE_DIR: '/package/.verify/agent-device',
       E2E_TELEMETRY_DISABLED: '1',
     });
-    const later = planE2E(SAMPLE_INPUTS, [], { verb: 'run', selection: { all: true }, video: true, retries: 0, githubReport: false, waitSeconds: 0 }, '/package', e2eOutputDir('/package/.verify/runs/r20261002-141210-7c1e' as EvidencePath, 2));
-    assert.equal(later.args[later.args.indexOf('--output') + 1], '.verify/runs/r20261002-141210-7c1e/e2e-3', 'a later group of the run writes beside the first');
+    const later = planE2E(SAMPLE_INPUTS, [], { verb: 'run', selection: { all: true }, video: true, retries: 0, githubReport: false, waitSeconds: 0 }, '/package', e2eOutputDir('/package/.verify/runs/r20261002-141210-7c1e' as EvidencePath));
+    assert.equal(later.args[later.args.indexOf('--output') + 1], '.verify/runs/r20261002-141210-7c1e/e2e');
     assert.equal(later.args[later.args.indexOf('--retries') + 1], '0', 'e2e retries once by default when CI is set, so the run always says how many it wants');
     assert.equal(later.args.includes('--max-failures'), false, 'a run that names no limit runs every test');
-    assert.equal(later.args.includes('--pass-with-no-tests'), true, 'every invocation is one group of a run, and a group with nothing left to run must not fail it');
+    assert.equal(later.args.includes('--pass-with-no-tests'), true, 'an invocation with nothing left to run must not fail the run');
   });
 });
 
@@ -89,7 +89,7 @@ describe('parseE2EReport', () => {
   };
 
   it('keeps the failed attempt of a test that passed on a retry: its error, its failure page, and its screenshot', () => {
-    const dir = e2eOutputDir(mkdtempSync(join(tmpdir(), 'verify-report-')) as EvidencePath, 0);
+    const dir = e2eOutputDir(mkdtempSync(join(tmpdir(), 'verify-report-')) as EvidencePath);
     mkdirSync(join(dir, 'results', 'opens-eeeeeeee55', 'attempt-0'), { recursive: true });
     writeFileSync(join(dir, 'results', 'opens-eeeeeeee55', 'trace.md'), '');
     writeFileSync(join(dir, 'results', 'opens-eeeeeeee55', 'attempt-0', 'screen.txt'), '');
@@ -125,8 +125,8 @@ describe('parseE2EReport', () => {
 
   it('maps statuses, skip reasons, errors, and failure pages, in the directory its invocation wrote to', () => {
     const run = mkdtempSync(join(tmpdir(), 'verify-report-')) as EvidencePath;
-    const dir = e2eOutputDir(run, 1);
-    assert.equal(dir, join(run, 'e2e-2'));
+    const dir = e2eOutputDir(run);
+    assert.equal(dir, join(run, 'e2e'));
     mkdirSync(join(dir, 'results', 'probe-fails-cccccccc33', 'attempt-0'), { recursive: true });
     writeFileSync(join(dir, 'results', 'probe-fails-cccccccc33', 'trace.md'), '');
     writeFileSync(join(dir, 'results', 'probe-fails-cccccccc33', 'attempt-0', 'screen.txt'), '');
@@ -174,12 +174,12 @@ describe('parseE2EReport', () => {
     assert.throws(() => parseE2EReport({ schemaVersion: 'report-2', run: { results: [] } }, [], '/x' as EvidencePath), { code: 'E2E_CRASHED' });
   });
 
-  it('copies app.screenshot artifacts under their labels with the test that took each, a later group replacing an earlier one with the same label', () => {
+  it('copies app.screenshot artifacts under their labels with the test that took each, replacing an earlier copy with the same label', () => {
     const dir = mkdtempSync(join(tmpdir(), 'verify-shots-')) as EvidencePath;
-    for (const [index, bytes] of [[0, 'first'], [1, 'second']] as const) {
-      mkdirSync(join(e2eOutputDir(dir, index), 'results', 'ios/x/attempt-0/screenshots'), { recursive: true });
-      writeFileSync(join(e2eOutputDir(dir, index), 'results', 'ios/x/attempt-0/screenshots/001-auth.png'), bytes);
-      assert.deepEqual(collectScreenshots(report, dir, e2eOutputDir(dir, index)), [{ label: 'auth', path: join(dir, 'screenshots', 'auth.png'), test: { spec: 'specs/features/auth-start/opens.e2e.ts', title: 'opens' } }]);
+    for (const bytes of ['first', 'second']) {
+      mkdirSync(join(e2eOutputDir(dir), 'results', 'ios/x/attempt-0/screenshots'), { recursive: true });
+      writeFileSync(join(e2eOutputDir(dir), 'results', 'ios/x/attempt-0/screenshots/001-auth.png'), bytes);
+      assert.deepEqual(collectScreenshots(report, dir, e2eOutputDir(dir)), [{ label: 'auth', path: join(dir, 'screenshots', 'auth.png'), test: { spec: 'specs/features/auth-start/opens.e2e.ts', title: 'opens' } }]);
       assert.equal(readFileSync(join(dir, 'screenshots', 'auth.png'), 'utf8'), bytes);
     }
   });

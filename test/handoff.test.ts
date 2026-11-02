@@ -365,7 +365,6 @@ function remoteRun(options: { readonly backend?: EvidenceRecord['backend']; read
       appLog: null,
       e2eReport: join(dir, 'e2e', 'report.json') as EvidencePath,
       identities: [],
-      settings: [{ label: 'standard', askedBy: null, specs: ['specs/explored/a.e2e.ts'], application: null, changed: false, held: true, e2eReport: join(dir, 'e2e', 'report.json') as EvidencePath }],
     },
     [],
   );

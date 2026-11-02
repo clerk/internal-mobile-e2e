@@ -42,7 +42,6 @@ function partialRecord(dir: EvidencePath, run: RunId): Omit<EvidenceRecord, 'sea
     appLog: join(dir, 'app.log') as EvidencePath,
     e2eReport: join(dir, 'e2e', 'report.json') as EvidencePath,
     identities: [{ email: testEmail(run, 'maya'), userId: OWN_USER }],
-    settings: [{ label: 'standard', askedBy: null, specs: ['specs/explored/a.e2e.ts'], application: null, changed: false, held: true, e2eReport: join(dir, 'e2e', 'report.json') as EvidencePath }],
   };
 }
 
@@ -290,17 +289,6 @@ describe('the evidence block of a pull request description', () => {
     assert.equal(refused(`text\n${start}\nno end`), `has \`${start}\` 1 times and \`${end}\` 0 times`);
     assert.equal(refused(`no start\n${end}\n`), `has \`${start}\` 0 times and \`${end}\` 1 times`);
     assert.equal(refused(`${end}\n${start}`), `has \`${end}\` before \`${start}\``);
-  });
-});
-
-describe('assertPublishable and the groups of a run', () => {
-  it('rejects a run with a group that lost its settings or never invoked e2e, though every result passed', () => {
-    const { dir, run } = runDir();
-    const base = sealEvidence(dir, partialRecord(dir, run), []);
-    const group = base.settings[0]!;
-    const other = { ...group, label: 'auth_multi_factor.required_for_sign_up=true' };
-    assert.throws(() => assertPublishable({ ...base, settings: [group, { ...other, held: false }] }, []), { code: 'EVIDENCE_UNSAFE', message: /1 group that did not run in full on its settings: auth_multi_factor\.required_for_sign_up=true/ });
-    assert.throws(() => assertPublishable({ ...base, settings: [{ ...group, e2eReport: null }, other] }, []), { code: 'EVIDENCE_UNSAFE', message: /did not run in full on its settings: standard/ });
   });
 });
 

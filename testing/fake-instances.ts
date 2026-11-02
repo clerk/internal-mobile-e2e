@@ -14,9 +14,8 @@ export function heldInstances(fake: FakeHeld = {}): Instances {
   };
   return {
     access: async () => 'a test',
-    recordedKey: () => null,
     ensure: async () => [HELD],
-    apply: async () => notDriving(),
+    drive: async () => notDriving(),
     keys: notDriving,
     clerk: notDriving,
     stopDriving: async () => undefined,

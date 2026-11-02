@@ -1,8 +1,7 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { isOrphaned, readClaims } from './claims.ts';
-import { check, type AppliedInstance, type Instances } from './instances/instances.ts';
-import { STANDARD, SettingsRefused, planGroups, readSpecText, settingsFileOf, sourceHash, straySettingsFile, type SettingsGroup } from './instances/settings.ts';
+import { check, type Driving, type Instances } from './instances/instances.ts';
 import { agentCheck, type AgentSource } from './agent.ts';
 import type { Agent } from '../../specs/support/agent.ts';
 import { runPassword } from '../../specs/support/clerk.ts';
@@ -71,13 +70,9 @@ export interface Deps {
   readonly watchDriver?: typeof watchDriver;
 }
 
-async function leaseWithInstances(deps: Deps, instances: { readonly willChange: boolean }, lease: () => Promise<LeaseOutcome>): Promise<[LeaseOutcome, readonly InstanceView[]]> {
+async function leaseWithInstances(deps: Deps, lease: () => Promise<LeaseOutcome>): Promise<[LeaseOutcome, readonly InstanceView[]]> {
   await deps.instances.access();
-  if (instances.willChange) {
-    const ensured = await deps.instances.ensure(instances, deps.progress);
-    return [await lease(), ensured];
-  }
-  const [leased, ensured] = await Promise.allSettled([lease(), deps.instances.ensure(instances, deps.progress)]);
+  const [leased, ensured] = await Promise.allSettled([lease(), deps.instances.ensure(deps.progress)]);
   if (leased.status === 'rejected') throw leased.reason;
   if (ensured.status === 'rejected') {
     const failure = ensured.reason instanceof VerifyFailure ? ensured.reason : new VerifyFailure('NOT_READY', (ensured.reason as Error).message, 'run `{cli} doctor`');
@@ -222,7 +217,7 @@ export async function up(deps: Deps, command: Extract<Command, { verb: 'up' }>):
   const platform = platformOf(deps.host, command.platform);
   chooseBackend(deps, platform, command);
   return deps.workspace.withAcquireLock(platform, async (lock) => {
-    const [leased, instances] = await leaseWithInstances(deps, { willChange: false }, () =>
+    const [leased, instances] = await leaseWithInstances(deps, () =>
       ensureLease(lock, command.backend, deps.workspace, deps.host, { waitSeconds: command.waitSeconds, ...(command.runner === undefined ? {} : { runner: command.runner }), progress: deps.progress, instances: deps.instances, retryWith: '{cli} up --wait <seconds>' }),
     );
     const outcome = { ...leased, devServer: await startRuntime(deps, leased.lease), instances };
@@ -282,7 +277,7 @@ export function nextStep(run: RunId, dir: EvidencePath, results: readonly SpecRe
   return `{cli} attach ${run} --pr <n> --screenshot <label> for a still change, and add --before <run-id> when the change is to something that exists; for behavior or a flow, put the steps that show it in host.evidence, run that spec on its own, and attach that run with --video`;
 }
 
-export async function leaseForRun<T>(deps: Deps, platform: Platform, command: Extract<Command, { verb: 'run' }>, instances: { readonly willChange: boolean }, drive: (outcome: RuntimeOutcome) => Promise<T>): Promise<T> {
+export async function leaseForRun<T>(deps: Deps, platform: Platform, command: Extract<Command, { verb: 'run' }>, drive: (outcome: RuntimeOutcome) => Promise<T>): Promise<T> {
   const key = await computeBuildKey(deps.host, platform, chooseBackend(deps, platform, command).backend.kind, deps.workspace.worktree);
   const retryWith = `{cli} run ${'all' in command.selection ? '--all' : command.selection.selectors.join(' ')} --wait <seconds>`;
   const deviceWait = {
@@ -294,7 +289,7 @@ export async function leaseForRun<T>(deps: Deps, platform: Platform, command: Ex
     platform,
     deviceWait,
     async (lock) => {
-      const [leased, up] = await leaseWithInstances(deps, instances, () =>
+      const [leased, up] = await leaseWithInstances(deps, () =>
         ensureLease(lock, command.backend, deps.workspace, deps.host, { waitSeconds: command.waitSeconds, ...(command.runner === undefined ? {} : { runner: command.runner }), progress: deps.progress, instances: deps.instances, retryWith }),
       );
       const outcome: RuntimeOutcome = { ...leased, devServer: await startRuntime(deps, leased.lease), instances: up };
@@ -310,27 +305,6 @@ interface Recorder {
   readonly recording: Recording;
   readonly recorderEntry: string | null;
   readonly startedAt: number;
-}
-
-interface GroupRun {
-  readonly run: RunId;
-  readonly dir: EvidencePath;
-  readonly log: EvidencePath;
-  readonly target: Target;
-  readonly broker: Pick<Broker, 'url' | 'tokenFile'>;
-  readonly driver: DriverWatch;
-  readonly command: Extract<Command, { verb: 'run' }>;
-  readonly agent: Agent | null;
-  readonly evidenceMarks: EvidencePath | null;
-}
-
-interface GroupOutcome {
-  readonly record: EvidenceRecord['settings'][number];
-  readonly results: readonly SpecResult[];
-  readonly screenshots: EvidenceRecord['screenshots'];
-  readonly identities: readonly Identity[];
-  readonly failure: VerifyFailure | null;
-  readonly stopsTheRun: boolean;
 }
 
 const notRun = (spec: SpecRef, platform: Platform, why: string): SpecResult => ({
@@ -349,107 +323,12 @@ const notRun = (spec: SpecRef, platform: Platform, why: string): SpecResult => (
   failureScreenshot: null,
 });
 
-class SpecEdited extends VerifyFailure {}
-
 const asFailure = (error: unknown): VerifyFailure => (error instanceof VerifyFailure ? error : new VerifyFailure('NOT_READY', (error as Error).message ?? String(error), 'run `{cli} doctor`, then rerun'));
 
-async function runGroup(deps: Deps, the: GroupRun, group: SettingsGroup, index: number, known: readonly Identity[], stopped: VerifyFailure | null): Promise<GroupOutcome> {
-  const { workspace } = deps;
-  const { settings } = group;
-  const specs = group.specs.map((spec): SpecRef => ({ kind: spec.kind, path: spec.path, feature: spec.feature }));
-  const outputDir = e2eOutputDir(the.dir, index);
-  const reportFile = join(outputDir, 'report.json') as EvidencePath;
-  let applied: AppliedInstance | null = null;
-  let invoked: { readonly exitCode: number } | null = null;
-  let held = false;
-  let unread: string | null = null;
-  let identities: readonly Identity[] = [];
-  let failure: VerifyFailure | null = null;
-  let stopsTheRun = false;
-  let lostItsSettings = false;
-  const refuseEdited = (): void => {
-    const edited = group.specs.find((spec) => sourceHash(readSpecText(workspace.packageDir, spec.path)) !== spec.sourceHash);
-    if (edited !== undefined) throw new SpecEdited('USAGE', `${edited.path} or its settings file changed while the run was in progress`, 'rerun; a run plans its groups from the spec files and their settings files as they are when it starts');
-  };
-  try {
-    if (stopped !== null) throw new VerifyFailure(stopped.code, `an earlier group of this run failed, so this one did not run: ${stopped.message}`, stopped.fix);
-    refuseEdited();
-    try {
-      applied = await deps.instances.apply(group, deps.progress);
-    } catch (error) {
-      stopsTheRun = !(error instanceof SettingsRefused);
-      throw error;
-    }
-    try {
-      refuseEdited();
-      if (index > 0) appendFileSync(the.log, `settings ${settings.label}: ${count(specs.length, 'spec file')}\n`);
-      const inputs: Inputs = {
-        target: the.target,
-        clerk: { publishableKey: deps.instances.keys().pk, access: { kind: 'stand-in', url: the.broker.url, tokenFile: the.broker.tokenFile } },
-        run: the.run,
-        evidenceMarks: the.evidenceMarks,
-      };
-      the.driver.startClean(deps.progress);
-      invoked = await invokeE2E(planE2E(inputs, specs, the.command, workspace.packageDir, outputDir), the.log, workspace.packageDir, deps.progress, the.agent);
-      identities = await newIdentities(deps, the.run, known);
-      try {
-        held = await applied.stillApplied();
-      } catch (error) {
-        unread = (error as Error).message ?? String(error);
-      }
-      refuseEdited();
-    } finally {
-      await applied.release();
-    }
-  } catch (error) {
-    failure = asFailure(error);
-    stopsTheRun ||= stopped === null && applied !== null && !(error instanceof SpecEdited);
-  }
-
-  let results: readonly SpecResult[] = [];
-  let screenshots: EvidenceRecord['screenshots'] = [];
-  if (invoked !== null && failure === null) {
-    try {
-      const report: unknown = existsSync(reportFile) ? JSON.parse(readFileSync(reportFile, 'utf8')) : null;
-      if (report === null) {
-        const daemon = the.driver.daemonThatDidNotStart();
-        throw new VerifyFailure('E2E_CRASHED', `e2e exited ${invoked.exitCode} before writing a report for ${settings.label}${daemon === null ? '' : `; ${daemon}`}`, `read ${the.log}${daemon === null ? '' : `, and driver/summary.txt beside it`}`);
-      }
-      results = parseE2EReport(report, specs, outputDir);
-      screenshots = collectScreenshots(report, the.dir, outputDir);
-    } catch (error) {
-      failure = error instanceof VerifyFailure ? error : new VerifyFailure('E2E_CRASHED', `e2e's report could not be read: ${(error as Error).message}`, `read ${reportFile}`);
-      results = [];
-      screenshots = [];
-    }
-    if (failure === null && !held) {
-      lostItsSettings = true;
-      failure =
-        unread === null
-          ? new VerifyFailure('INSTANCE_MISCONFIGURED', `the instance no longer showed ${settings.label} when its specs ended, so what they saw is unknown`, 'rerun; if another command in this worktree changed the instance, let one finish before the other starts')
-          : new VerifyFailure('NOT_READY', `the instance's environment could not be read after the specs on ${settings.label} ended, so what they saw is unknown: ${unread}`, 'rerun; a cloud environment needs *.clerk.accounts.dev in its allowed domains');
-    }
-  }
-  const unreported = invoked === null || invoked.exitCode === 0 ? 'e2e reported no result for this file: it registers no test' : `e2e exited ${invoked.exitCode} and reported no result for this file: it failed to load or registers no test; e2e.log in the run directory says which`;
-  const why = failure?.message ?? unreported;
-  const missing = specs.filter((spec) => !results.some((result) => result.spec.path === spec.path));
-  const reported = lostItsSettings ? specs.filter((spec) => !missing.includes(spec)) : [];
-  return {
-    record: {
-      label: settings.label,
-      askedBy: settings.askedBy,
-      specs: specs.map((spec) => spec.path),
-      application: applied?.instance.id ?? null,
-      changed: applied !== null && applied.changed,
-      held,
-      e2eReport: invoked === null ? null : reportFile,
-    },
-    results: [...results, ...[...missing, ...reported].map((spec) => notRun(spec, the.target.platform, why))],
-    screenshots,
-    identities,
-    failure,
-    stopsTheRun,
-  };
+interface Invoked {
+  readonly exitCode: number;
+  readonly standard: boolean;
+  readonly unread: string | null;
 }
 
 export async function runVerb(deps: Deps, command: Extract<Command, { verb: 'run' }>): Promise<RunResult> {
@@ -458,13 +337,8 @@ export async function runVerb(deps: Deps, command: Extract<Command, { verb: 'run
   const specs = resolveSpecs(workspace.packageDir, command.selection);
   protectGitHubTokens(deps.env);
   const agent = deps.agent?.() ?? null;
-  const recorded = deps.instances.recordedKey();
-  const stray = straySettingsFile(workspace.packageDir);
-  if (stray !== null) throw stray;
-  const sources = specs.map((spec) => ({ spec, ...readSpecText(workspace.packageDir, spec.path) }));
-  const groups = planGroups(sources, recorded ?? STANDARD.key);
-  if (groups.length > 1) deps.progress(`settings ${groups.length} groups in this run: ${groups.map((group, index) => `${group.settings.label} (${index === 0 ? count(group.specs.length, 'spec file') : group.specs.length})`).join(', ')}`);
-  return leaseForRun(deps, platform, command, { willChange: groups.some((group) => group.settings.key !== recorded) }, async (outcome) => {
+  const sources = specs.map((spec) => ({ spec, source: readFileSync(join(workspace.packageDir, spec.path), 'utf8') }));
+  return leaseForRun(deps, platform, command, async (outcome) => {
     try {
       const { lease, backend } = outcome;
       const { run, dir, scratch } = workspace.newRun();
@@ -472,10 +346,9 @@ export async function runVerb(deps: Deps, command: Extract<Command, { verb: 'run
       const driver = (deps.watchDriver ?? watchDriver)(workspace.agentDeviceDir, dir);
       const startedAt = new Date();
       deps.progress(`run ${run}  ${platform}  ${outcome.view.backend} ${outcome.view.device}  build ${outcome.app.key}`);
-      for (const { spec, source, declaration } of sources) {
+      for (const { spec, source } of sources) {
         mkdirSync(dirname(join(dir, spec.path)), { recursive: true });
         writeFileSync(join(dir, spec.path), source);
-        if (declaration !== null) writeFileSync(join(dir, settingsFileOf(spec.path)), declaration);
       }
 
       let recorder = null as Promise<Recorder> | null;
@@ -501,15 +374,35 @@ export async function runVerb(deps: Deps, command: Extract<Command, { verb: 'run
 
       const evidenceMarks = command.video && !('all' in command.selection) ? (join(dir, EVIDENCE_MARKS_FILE) as EvidencePath) : null;
       if (evidenceMarks !== null) deps.progress(`video   paced for a reviewer to follow; a run with --no-video, or with --all, keeps full speed`);
-      const outcomes: GroupOutcome[] = [];
+      const log = join(dir, 'e2e.log') as EvidencePath;
+      const outputDir = e2eOutputDir(dir);
+      const reportFile = join(outputDir, 'report.json') as EvidencePath;
+      let invoked: Invoked | null = null;
+      let identities: readonly Identity[] = [];
+      let failure: VerifyFailure | null = null;
       let endFailure: unknown = null;
       let videoStartedAt: number | null = null;
       try {
-        const the: GroupRun = { run, dir, log: join(dir, 'e2e.log') as EvidencePath, target: targetOf(deps, outcome), broker, driver, command, agent, evidenceMarks };
-        for (const [index, group] of groups.entries()) {
-          const stopped = outcomes.find((done) => done.stopsTheRun)?.failure ?? null;
-          outcomes.push(await runGroup(deps, the, group, index, outcomes.flatMap((done) => done.identities), stopped));
+        const driving = await deps.instances.drive();
+        const inputs: Inputs = {
+          target: targetOf(deps, outcome),
+          clerk: { publishableKey: driving.keys.pk, access: { kind: 'stand-in', url: broker.url, tokenFile: broker.tokenFile } },
+          run,
+          evidenceMarks,
+        };
+        try {
+          driver.startClean(deps.progress);
+          const { exitCode } = await invokeE2E(planE2E(inputs, specs, command, workspace.packageDir, outputDir), log, workspace.packageDir, deps.progress, agent);
+          identities = await newIdentities(deps, run, []);
+          invoked = await driving.stillStandard().then(
+            (standard) => ({ exitCode, standard, unread: null }),
+            (error: unknown) => ({ exitCode, standard: false, unread: (error as Error).message ?? String(error) }),
+          );
+        } finally {
+          await driving.release();
         }
+      } catch (error) {
+        failure = asFailure(error);
       } finally {
         const started = (await recorder?.catch(() => null)) ?? { recording: null, recorderEntry: null, startedAt: null };
         videoStartedAt = started.startedAt;
@@ -517,6 +410,38 @@ export async function runVerb(deps: Deps, command: Extract<Command, { verb: 'run
           .catch((error: unknown) => void (endFailure = error))
           .finally(() => deps.instances.stopDriving());
       }
+
+      let results: readonly SpecResult[] = [];
+      let screenshots: EvidenceRecord['screenshots'] = [];
+      let lostItsSettings = false;
+      if (invoked !== null) {
+        try {
+          const report: unknown = existsSync(reportFile) ? JSON.parse(readFileSync(reportFile, 'utf8')) : null;
+          if (report === null) {
+            const daemon = driver.daemonThatDidNotStart();
+            throw new VerifyFailure('E2E_CRASHED', `e2e exited ${invoked.exitCode} before writing a report${daemon === null ? '' : `; ${daemon}`}`, `read ${log}${daemon === null ? '' : `, and driver/summary.txt beside it`}`);
+          }
+          results = parseE2EReport(report, specs, outputDir);
+          screenshots = collectScreenshots(report, dir, outputDir);
+        } catch (error) {
+          failure = error instanceof VerifyFailure ? error : new VerifyFailure('E2E_CRASHED', `e2e's report could not be read: ${(error as Error).message}`, `read ${reportFile}`);
+          results = [];
+          screenshots = [];
+        }
+        if (failure === null && !invoked.standard) {
+          lostItsSettings = true;
+          failure =
+            invoked.unread === null
+              ? new VerifyFailure('INSTANCE_MISCONFIGURED', 'the instance no longer showed the standard settings when the specs ended, so what they saw is unknown', 'rerun; if another command in this worktree changed the instance, let one finish before the other starts')
+              : new VerifyFailure('NOT_READY', `the instance's environment could not be read after the specs ended, so what they saw is unknown: ${invoked.unread}`, 'rerun; a cloud environment needs *.clerk.accounts.dev in its allowed domains');
+        }
+      }
+      const unreported = invoked === null || invoked.exitCode === 0 ? 'e2e reported no result for this file: it registers no test' : `e2e exited ${invoked.exitCode} and reported no result for this file: it failed to load or registers no test; e2e.log in the run directory says which`;
+      const why = failure?.message ?? unreported;
+      const missing = specs.filter((spec) => !results.some((result) => result.spec.path === spec.path));
+      const reported = lostItsSettings ? specs.filter((spec) => !missing.includes(spec)) : [];
+      results = [...results, ...[...missing, ...reported].map((spec) => notRun(spec, platform, why))];
+
       if (command.video && recorder === null) deps.progress('video   no test launched the app, so this run has no video');
       const hasVideo = existsSync(join(dir, 'video.mp4'));
       const evidenceSpans = evidenceMarks === null || videoStartedAt === null || !hasVideo ? [] : spansOfMarks(readMarks(evidenceMarks), videoStartedAt);
@@ -531,8 +456,6 @@ export async function runVerb(deps: Deps, command: Extract<Command, { verb: 'run
       const logs = await backend.logs(lease, startedAt, host.logPredicates?.[platform]).catch((error: unknown) => `the device logs could not be read: ${(error as Error).message ?? String(error)}`);
       writeFileSync(appLog, redact(logs));
 
-      const results = outcomes.flatMap((done) => done.results);
-      const screenshots = new Map(outcomes.flatMap((done) => done.screenshots.map((shot) => [shot.label, shot] as const)));
       const git = await gitFacts(deps.runner, workspace.worktree);
       const record = sealEvidence(dir, {
         run,
@@ -550,19 +473,17 @@ export async function runVerb(deps: Deps, command: Extract<Command, { verb: 'run
         videos: hasVideo ? [join(dir, 'video.mp4') as EvidencePath] : [],
         evidenceSpans,
         evidenceTaps: viewport === null ? null : { viewport, taps },
-        screenshots: [...screenshots.values()],
+        screenshots,
         appLog,
-        e2eReport: join(e2eOutputDir(dir, 0), 'report.json') as EvidencePath,
-        identities: outcomes.flatMap((done) => done.identities),
-        settings: outcomes.map((done) => done.record),
+        e2eReport: reportFile,
+        identities,
       });
-      const failed = outcomes.flatMap((done) => (done.failure === null ? [] : [{ label: done.record.label, failure: done.failure }]));
       if (command.githubReport) {
-        for (const line of await reportToGitHub({ record, failures: failed, packageDir: workspace.packageDir })) deps.progress(`github    ${line}`);
+        for (const line of await reportToGitHub({ record, failure, packageDir: workspace.packageDir })) deps.progress(`github    ${line}`);
       }
-      if (failed[0] !== undefined) {
-        deps.progress(`evidence  ${dir}  sealed; ${count(failed.length, 'group')} of ${groups.length} did not run in full, and run.json has a failed result for each of their spec files`);
-        throw failed[0].failure;
+      if (failure !== null) {
+        deps.progress(`evidence  ${dir}  sealed; the run did not run in full, and run.json has a failed result for each spec file it did not run`);
+        throw failure;
       }
       if (endFailure !== null) {
         deps.progress(`evidence  ${dir}  sealed; the specs ran, and the run still fails because it did not end cleanly`);

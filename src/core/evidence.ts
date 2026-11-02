@@ -1,7 +1,6 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { SHORTEST_SECRET, holdsJwt, usedSecretValues } from '../../specs/support/secret.ts';
-import { count } from './state.ts';
 import { VerifyFailure, type Brand, type EvidencePath, type EvidenceRecord } from './types.ts';
 
 function files(dir: string): string[] {
@@ -87,8 +86,6 @@ export function assertPublishable(record: EvidenceRecord, loggedUsers: readonly 
   assertShowable(record, loggedUsers);
   const failed = record.results.filter((r) => r.status === 'failed' || r.status === 'interrupted');
   if (failed.length > 0) refuse(`run ${record.run} has ${failed.length} failing spec(s)`, 'fix the failures and attach a passing run; a failing run can only be the --before of a passing one');
-  const incomplete = record.settings.filter((group) => group.held === false || group.e2eReport === null);
-  if (incomplete.length > 0) refuse(`run ${record.run} has ${count(incomplete.length, 'group')} that did not run in full on its settings: ${incomplete.map((group) => group.label).join('; ')}`, 'attach a run in which every group ran on the settings it declares');
   if (!record.results.some((r) => r.status === 'passed' || r.status === 'flaky')) refuse(`run ${record.run} passed no specs`, 'attach a run whose specs ran and passed');
   return record as Publishable;
 }

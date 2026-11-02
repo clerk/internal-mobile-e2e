@@ -32,11 +32,6 @@ export type ScratchPath = Brand<string, 'ScratchPath'>;
 
 export type Json = null | boolean | number | string | readonly Json[] | { readonly [key: string]: Json };
 
-export interface InstanceSettings {
-  readonly config: { readonly [key: string]: Json };
-  readonly environment: { readonly [leaf: string]: Json };
-}
-
 export interface InstanceView {
   readonly id: string;
   readonly name: string;
@@ -372,15 +367,6 @@ export interface EvidenceRecord {
   readonly appLog: EvidencePath | null;
   readonly e2eReport: EvidencePath;
   readonly identities: readonly { readonly email: TestEmail; readonly userId: string | null }[];
-  readonly settings: readonly {
-    readonly label: string;
-    readonly askedBy: string | null;
-    readonly specs: readonly string[];
-    readonly application: string | null;
-    readonly changed: boolean;
-    readonly held: boolean;
-    readonly e2eReport: EvidencePath | null;
-  }[];
   readonly tainted: readonly EvidencePath[];
   readonly sealed: true;
 }

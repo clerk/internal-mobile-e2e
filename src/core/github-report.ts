@@ -16,53 +16,38 @@ export function protectGitHubTokens(env: Readonly<Record<string, string | undefi
 
 type RunError = Report['run']['errors'][number];
 
-export function mergeGroupReports(reports: readonly [Report, ...Report[]], notRun: readonly RunError[]): Report {
-  const results = new Map<string, Report['run']['results'][number]>();
-  for (const report of reports) {
-    for (const result of report.run.results) {
-      const seen = results.get(result.id);
-      if (seen === undefined || (result.selected && !seen.selected)) results.set(result.id, result);
-    }
-  }
-  const first = reports[0];
-  const worst = reports.find((report) => report.run.status !== 'passed') ?? first;
+export function withFailure(report: Report, failure: VerifyFailure | null): Report {
+  if (failure === null) return report;
+  const error: RunError = { category: 'infrastructure', code: failure.code, message: redact(failure.message), retryable: false };
   return {
-    ...first,
+    ...report,
     run: {
-      ...first.run,
-      status: notRun.length > 0 && worst.run.status === 'passed' ? 'failed' : worst.run.status,
-      exitCode: notRun.length > 0 && worst.run.exitCode === 0 ? 1 : worst.run.exitCode,
-      finishedAt: reports.at(-1)!.run.finishedAt,
-      serialGroups: reports.flatMap((report) => report.run.serialGroups),
-      results: [...results.values()],
-      errors: [...reports.flatMap((report) => report.run.errors), ...notRun],
+      ...report.run,
+      status: report.run.status === 'passed' ? 'failed' : report.run.status,
+      exitCode: report.run.exitCode === 0 ? 1 : report.run.exitCode,
+      errors: [...report.run.errors, error],
     },
   };
 }
 
 export interface GitHubReportInput {
   readonly record: EvidenceRecord;
-  readonly failures: readonly { readonly label: string; readonly failure: VerifyFailure }[];
+  readonly failure: VerifyFailure | null;
   readonly packageDir: string;
 }
 
-export async function reportToGitHub({ record, failures, packageDir }: GitHubReportInput): Promise<readonly string[]> {
+export async function reportToGitHub({ record, failure, packageDir }: GitHubReportInput): Promise<readonly string[]> {
   if (record.tainted.length > 0) return ['not reported: a file of this run holds a secret value'];
   try {
-    const files = record.settings.flatMap((group) => (group.e2eReport !== null && existsSync(group.e2eReport) ? [group.e2eReport] : []));
-    const [first, ...rest] = files.map((file) => JSON.parse(readFileSync(file, 'utf8')) as Report);
-    if (first === undefined) return ['not reported: no group of this run wrote a report'];
-    const report = mergeGroupReports(
-      [first, ...rest],
-      failures.map(({ label, failure }) => ({ category: 'infrastructure', code: failure.code, message: redact(`${label}: ${failure.message}`), retryable: false })),
-    );
+    if (!existsSync(record.e2eReport)) return ['not reported: e2e wrote no report for this run'];
+    const report = withFailure(JSON.parse(readFileSync(record.e2eReport, 'utf8')) as Report, failure);
     const run: FinishedRun = {
       report,
       status: report.run.status,
       exitCode: report.run.exitCode,
       projectRoot: packageDir,
-      reportPath: files[0],
-      artifactsRoot: join(dirname(files[0]!), 'results'),
+      reportPath: record.e2eReport,
+      artifactsRoot: join(dirname(record.e2eReport), 'results'),
       aiTracePath: undefined,
       traces: new Map(),
     };

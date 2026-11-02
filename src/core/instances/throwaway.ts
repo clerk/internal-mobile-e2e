@@ -7,9 +7,8 @@ import type { InstanceKeys } from '../keys.ts';
 import { count } from '../state.ts';
 import { newEntryId, type Workspace } from '../workspace.ts';
 import { VerifyFailure, type ApplicationView, type InstanceView, type Json, type LedgerEntry, type ProcessRef, type PublishableKey } from '../types.ts';
-import { compareEnvironment, describeDifference, type EnvironmentComparison, type Leaves } from './settings.ts';
 import { deadlineOf, throwawayApplication, throwawayName, type Listing, type OpenWorkspace, type Platform } from './platform.ts';
-import { STANDARD, STANDARD_ENVIRONMENT_KEY, STANDARD_FILE, SettingsRefused, configFor, configLeaves, expectedEnvironment, sameLeaf, settingsFileOf, settingsOf, type Settings, type SettingsGroup } from './settings.ts';
+import { BASE_KEY, STANDARD_FILE, SettingsRefused, compareEnvironment, configLeaves, describeDifference, sameLeaf, standardFile, type EnvironmentComparison } from './settings.ts';
 
 type ApplicationEntry = Extract<LedgerEntry, { kind: 'application' }>;
 
@@ -25,7 +24,7 @@ interface Held {
 }
 
 interface ApplicationState {
-  readonly settings?: Settings;
+  readonly standard: boolean;
   readonly drivers: readonly ProcessRef[];
 }
 
@@ -35,7 +34,6 @@ const REPLACE_WITHIN_MS = 60 * 60_000;
 const REAP_GRACE_MS = 5 * 60_000;
 const REAP_PER_COMMAND = 5;
 const SHOWN_WITHIN_MS = 15_000;
-const MOVED_LEAVES_LISTED = 20;
 
 export interface ThrowawayDeps {
   readonly workspace: Workspace;
@@ -49,19 +47,22 @@ export interface ThrowawayDeps {
   readonly now?: () => number;
 }
 
+export type Standing = { readonly kind: 'unknown' } | { readonly kind: 'standard' };
+
+export const standingLabel = (standing: Standing): string => (standing.kind === 'standard' ? 'standard' : 'unknown settings');
+
 export interface HeldApplication {
   readonly id: string;
   readonly name: string;
-  readonly settings: Settings | null;
+  readonly standing: Standing;
   keys(): Promise<InstanceKeys>;
 }
 
-export interface AppliedApplication {
+export interface DrivenApplication {
   readonly id: string;
   readonly name: string;
   readonly keys: InstanceKeys;
-  readonly changed: boolean;
-  stillApplied(): Promise<boolean>;
+  stillStandard(): Promise<boolean>;
 }
 
 export interface Inspection {
@@ -71,8 +72,8 @@ export interface Inspection {
 
 export interface Throwaway {
   held(): HeldApplication | null;
-  ensure(options: { readonly willChange: boolean }, progress: (line: string) => void): Promise<{ readonly views: readonly InstanceView[]; readonly created: HeldApplication | null }>;
-  apply(group: SettingsGroup, progress: (line: string) => void): Promise<AppliedApplication>;
+  ensure(progress: (line: string) => void): Promise<{ readonly views: readonly InstanceView[]; readonly created: HeldApplication | null }>;
+  drive(): Promise<DrivenApplication>;
   stopDriving(): void;
   inspect(): Promise<Inspection | null>;
   finish(ledger: Workspace, progress: (line: string) => void): Promise<readonly ApplicationView[]>;
@@ -100,33 +101,21 @@ function readRecord(ledger: Workspace, name: string): InstanceRecord | null {
   }
 }
 
-const UNKNOWN: ApplicationState = { drivers: [] };
-
-function recordedSettings(raw: unknown): Settings | undefined {
-  const record = raw as Partial<Settings> | null | undefined;
-  if (typeof record !== 'object' || record === null || typeof record.key !== 'string') return undefined;
-  try {
-    const fresh = settingsOf(record.declared ?? null, typeof record.askedBy === 'string' ? record.askedBy : null);
-    return fresh.key === record.key ? fresh : undefined;
-  } catch {
-    return undefined;
-  }
-}
+const UNKNOWN: ApplicationState = { standard: false, drivers: [] };
 
 function readState(ledger: Workspace, name: string): ApplicationState {
   try {
-    const raw = JSON.parse(readFileSync(stateFile(ledger, name), 'utf8')) as { environmentKey?: unknown; settings?: unknown; drivers?: unknown } | null;
+    const raw = JSON.parse(readFileSync(stateFile(ledger, name), 'utf8')) as { baseKey?: unknown; drivers?: unknown } | null;
     if (typeof raw !== 'object' || raw === null) return UNKNOWN;
-    const settings = raw.environmentKey === STANDARD_ENVIRONMENT_KEY ? recordedSettings(raw.settings) : undefined;
     const drivers = Array.isArray(raw.drivers) ? (raw.drivers as Partial<ProcessRef>[]).flatMap((driver) => (typeof driver?.pid === 'number' && typeof driver.startedAt === 'number' ? [{ pid: driver.pid, startedAt: driver.startedAt }] : [])) : [];
-    return { ...(settings === undefined ? {} : { settings }), drivers };
+    return { standard: raw.baseKey === BASE_KEY, drivers };
   } catch {
     return UNKNOWN;
   }
 }
 
 function writeState(ledger: Workspace, name: string, state: ApplicationState): void {
-  writeWhole(stateFile(ledger, name), `${JSON.stringify({ environmentKey: STANDARD_ENVIRONMENT_KEY, ...(state.settings === undefined ? {} : { settings: state.settings }), drivers: state.drivers })}\n`);
+  writeWhole(stateFile(ledger, name), `${JSON.stringify({ ...(state.standard ? { baseKey: BASE_KEY } : {}), drivers: state.drivers })}\n`);
 }
 
 function lifetimeMs(env: ThrowawayDeps['env']): number {
@@ -139,7 +128,7 @@ function lifetimeMs(env: ThrowawayDeps['env']): number {
   return hours * 3_600_000;
 }
 
-const compareWith = (settings: Settings, live: Json): EnvironmentComparison => compareEnvironment(expectedEnvironment(settings), live);
+const compareWithStandard = (live: Json): EnvironmentComparison => compareEnvironment(standardFile().environment, live);
 
 interface Moved {
   readonly compared: number;
@@ -153,11 +142,6 @@ const nearDeadline = (name: string, at: number): boolean => {
 };
 
 const seconds = (ms: number, digits: number): string => `${(ms / 1000).toFixed(digits)}s`;
-
-const fileOf = (settings: Settings): string => (settings.askedBy === null ? 'the settings file' : settingsFileOf(settings.askedBy));
-
-const beyondDeclared = (compared: EnvironmentComparison, declared: Leaves): string | null =>
-  compared.differing.some((d) => d.path in declared) ? null : JSON.stringify(compared.differing.map((d) => [d.path, d.found ?? null]));
 
 export function createThrowaway(deps: ThrowawayDeps): Throwaway {
   const { workspace, platform, self } = deps;
@@ -194,7 +178,8 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
     }
     return { pk: app.record.publishableKey, sk: await sk };
   }
-  const describe = (app: Held, settings: Settings | undefined): HeldApplication => ({ id: app.record.application, name: app.entry.name, settings: settings ?? null, keys: () => keysOf(app) });
+  const standingOf = (state: ApplicationState): Standing => (state.standard ? { kind: 'standard' } : { kind: 'unknown' });
+  const describe = (app: Held, state: ApplicationState): HeldApplication => ({ id: app.record.application, name: app.entry.name, standing: standingOf(state), keys: () => keysOf(app) });
   const otherDrivers = (state: ApplicationState): readonly ProcessRef[] => state.drivers.filter((driver) => driver.pid !== self.pid && deps.isRunning(driver));
 
   async function environment(pk: PublishableKey): Promise<{ readonly status: number; readonly json: Json; readonly at: number }> {
@@ -222,58 +207,21 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
   const standardRefused = (said: string): VerifyFailure =>
     new VerifyFailure('INSTANCE_MISCONFIGURED', `Clerk's Platform API refused the standard settings in ${STANDARD_FILE}: ${said}`, 'the standard file needs a change of its own; the spec is not at fault');
 
-  async function blame(open: OpenWorkspace, app: Held, to: Settings, refusal: SettingsRefused): Promise<VerifyFailure> {
-    if (to.declared === null) return standardRefused(refusal.said);
-    try {
-      await open.configure({ application: throwawayApplication(app.record.application, app.entry.name), instanceId: app.record.instanceId }, configFor(STANDARD), { dryRun: true });
-    } catch (error) {
-      if (error instanceof SettingsRefused) return standardRefused(error.said);
-      throw error;
-    }
-    const { param } = refusal;
-    const declared = Object.keys(configLeaves(to.declared.config));
-    const what =
-      param === null
-        ? `Clerk refused these together; remove or correct one of ${declared.join(', ')} in \`config\` in ${fileOf(to)}.`
-        : declared.some((leaf) => leaf === param || leaf.endsWith(`.${param}`))
-          ? `correct or remove \`${param}\` in \`config\` in ${fileOf(to)}: Clerk says what is wrong with it above.`
-          : `add \`${param}\` to \`config\` in ${fileOf(to)} (Clerk requires it with what the spec declares), or remove what requires it.`;
-    return new SettingsRefused(
-      `${to.askedBy} declares ${to.label}, and Clerk's Platform API refused it: ${refusal.said}`,
-      what,
-      refusal,
+  function notShown(app: Held, status: number, compared: EnvironmentComparison | null): VerifyFailure {
+    const id = app.record.application;
+    if (compared === null) return new VerifyFailure('NOT_READY', `the Frontend API of ${id} (${app.entry.name}) answered ${status} after its settings were changed`, 'rerun; a cloud environment needs *.clerk.accounts.dev in its allowed domains');
+    return new VerifyFailure(
+      'INSTANCE_MISCONFIGURED',
+      `${id} (${app.entry.name}) does not match ${STANDARD_FILE} after it was configured: ${compared.differing.slice(0, 5).map((d) => describeDifference(d)).join('; ')}`,
+      '`{cli} down`, then rerun once; if it repeats, Clerk changed what a setting does, and the file needs a change of its own, apart from the work being verified',
     );
   }
 
-  function notShown(app: Held, to: Settings, status: number, compared: EnvironmentComparison | null, afterMs: number): VerifyFailure {
-    const id = app.record.application;
-    if (compared === null) return new VerifyFailure('NOT_READY', `the Frontend API of ${id} (${app.entry.name}) answered ${status} after its settings were changed`, 'rerun; a cloud environment needs *.clerk.accounts.dev in its allowed domains');
-    if (to.declared === null) {
-      return new VerifyFailure(
-        'INSTANCE_MISCONFIGURED',
-        `${id} (${app.entry.name}) does not match ${STANDARD_FILE} after it was configured: ${compared.differing.slice(0, 5).map((d) => describeDifference(d)).join('; ')}`,
-        '`{cli} down`, then rerun once; if it repeats, Clerk changed what a setting does, and the file needs a change of its own, apart from the work being verified',
-      );
-    }
-    const declared = to.declared.environment;
-    const unmet = compared.differing.filter((d) => d.path in declared);
-    const absent = unmet.filter((d) => d.found === undefined).map((d) => d.path);
-    const other = unmet.filter((d) => d.found !== undefined);
-    const moved = compared.differing.filter((d) => !(d.path in declared));
-    const pairs = moved.slice(0, MOVED_LEAVES_LISTED).map((d) => `${JSON.stringify(d.path)}: ${d.found === undefined ? 'absent' : JSON.stringify(d.found)}`).join(', ');
-    const problems = [
-      ...(absent.length === 0 ? [] : [{ said: `its public environment has no leaf ${absent.join(', ')}`, fix: `check the spelling of ${absent.join(', ')} under \`environment\` in ${fileOf(to)}` }]),
-      ...(other.length === 0 ? [] : [{ said: `it does not show ${other.slice(0, 5).map((d) => describeDifference(d, 'the declaration expects')).join('; ')}`, fix: `correct the leaves under \`environment\` in ${fileOf(to)} to what the setting shows in the instance's public environment` }]),
-      ...(moved.length === 0 ? [] : [{ said: `the change moved ${count(moved.length, 'setting')} the declaration does not list: ${pairs}${moved.length > MOVED_LEAVES_LISTED ? `, and ${moved.length - MOVED_LEAVES_LISTED} more` : ''}`, fix: `one setting can move several leaves: add them to \`environment\` in ${fileOf(to)}, as listed` }]),
-    ];
-    return new SettingsRefused(`${to.askedBy} declares ${to.label}, and ${seconds(afterMs, 1)} after Clerk accepted it on ${id} ${problems.map((problem) => problem.said).join('; and ')}`, problems.map((problem) => problem.fix).join('; '));
-  }
-
-  async function moveTo(open: OpenWorkspace, app: Held, to: Settings): Promise<Moved> {
+  async function toStandard(open: OpenWorkspace, app: Held): Promise<Moved> {
     const name = app.entry.name;
     const before = readState(workspace, name);
-    writeState(workspace, name, { drivers: before.drivers });
-    const body = configFor(to);
+    writeState(workspace, name, { standard: false, drivers: before.drivers });
+    const body = standardFile().config;
     const started = now();
     let answer: { readonly after: Json };
     try {
@@ -281,18 +229,11 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
     } catch (error) {
       if (!(error instanceof SettingsRefused)) throw error;
       writeState(workspace, name, before);
-      throw await blame(open, app, to, error);
+      throw standardRefused(error.said);
     }
     const answered = now();
-    const after = configLeaves(answer.after ?? {});
-    const differing = Object.entries(configLeaves(body)).filter(([leaf, value]) => !sameLeaf(after[leaf], value));
-    const declared = to.declared === null ? {} : configLeaves(to.declared.config);
-    const altered = differing.find(([leaf]) => Object.hasOwn(declared, leaf) && after[leaf] !== undefined);
-    if (altered !== undefined) {
-      const [leaf, value] = altered;
-      throw new SettingsRefused(`${to.askedBy} declares ${leaf}=${JSON.stringify(value)}, and Clerk stored ${JSON.stringify(after[leaf])}`, `correct \`${leaf}\` in \`config\` in ${fileOf(to)} to a value Clerk keeps`);
-    }
-    const lost = differing[0];
+    const after = configLeaves(answer.after);
+    const lost = Object.entries(configLeaves(body)).find(([leaf, value]) => !sameLeaf(after[leaf], value));
     if (lost !== undefined) {
       throw new VerifyFailure(
         'INSTANCE_MISCONFIGURED',
@@ -301,23 +242,20 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
       );
     }
     const until = answered + SHOWN_WITHIN_MS;
-    let settled: string | null = null;
     for (;;) {
       const live = await environment(app.record.publishableKey);
-      const compared = live.status !== 200 ? null : compareWith(to, live.json);
+      const compared = live.status !== 200 ? null : compareWithStandard(live.json);
       if (compared !== null && compared.differing.length === 0) {
-        writeState(workspace, name, { settings: to, drivers: before.drivers });
+        writeState(workspace, name, { standard: true, drivers: before.drivers });
         return { compared: compared.compared, answeredMs: answered - started, visibleMs: now() - answered };
       }
-      const rest = compared === null || to.declared === null ? null : beyondDeclared(compared, to.declared.environment);
-      if ((rest !== null && rest === settled) || now() >= until) throw notShown(app, to, live.status, compared, now() - answered);
-      settled = rest;
+      if (now() >= until) throw notShown(app, live.status, compared);
       await sleep(500);
     }
   }
 
-  const changedLine = (settings: Settings, id: string, moved: Moved): string =>
-    `settings ${settings.label}  on ${id} in ${seconds(moved.answeredMs + moved.visibleMs, 1)} (Clerk answered in ${seconds(moved.answeredMs, 2)}, the instance showed it ${seconds(moved.visibleMs, 2)} later), ${moved.compared} settings match`;
+  const changedLine = (id: string, moved: Moved): string =>
+    `settings standard  on ${id} in ${seconds(moved.answeredMs + moved.visibleMs, 1)} (Clerk answered in ${seconds(moved.answeredMs, 2)}, the instance showed it ${seconds(moved.visibleMs, 2)} later), ${moved.compared} settings match`;
 
   async function create(open: OpenWorkspace, at: Date | null, progress: (line: string) => void): Promise<Held> {
     const name = throwawayName(new Date((at?.getTime() ?? now()) + lifetimeMs(deps.env)), randomBytes(4).toString('hex'));
@@ -331,7 +269,7 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
     writeFileSync(recordFile(workspace, name), `${JSON.stringify(record)}\n`, { mode: 0o600, flag: 'wx' });
     secretKeys.set(record.application, Promise.resolve(created.sk));
     const app: Held = { entry, record };
-    const moved = await moveTo(open, app, STANDARD);
+    const moved = await toStandard(open, app);
     progress(`instance ${record.application}  up in ${seconds(now() - started, 1)} on standard, ${moved.compared} settings match ${STANDARD_FILE}`);
     return app;
   }
@@ -366,15 +304,15 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
     const keys = await keysOf(app);
     const users = await deps.clerk(() => keys).userCount();
     if (users >= REPLACE_AT_USERS) return { retire: `it holds ${users} of the ${DEVELOPMENT_USER_LIMIT} users a development instance allows` };
-    if (state.settings === undefined) return { repair: 'what it is on is not recorded' };
-    if (compareWith(state.settings, live.json).differing.length > 0) return { repair: `it no longer shows ${state.settings.label}` };
+    if (!state.standard) return { repair: 'what it is on is not recorded' };
+    if (compareWithStandard(live.json).differing.length > 0) return { repair: 'it no longer shows standard' };
     return { keep: 'as-is' };
   }
 
   return {
     held: () => {
       const app = pool().held;
-      return app === null ? null : describe(app, readState(workspace, app.entry.name).settings);
+      return app === null ? null : describe(app, readState(workspace, app.entry.name));
     },
 
     async inspect() {
@@ -383,20 +321,20 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
       const state = readState(workspace, app.entry.name);
       const live = await environment(app.record.publishableKey);
       if (live.status !== 200 && live.status !== 404) throw new Error(`the Frontend API of ${app.record.application} answered ${live.status}`);
-      return { application: describe(app, state.settings), found: live.status === 404 ? 'gone' : compareWith(state.settings ?? STANDARD, live.json) };
+      return { application: describe(app, state), found: live.status === 404 ? 'gone' : compareWithStandard(live.json) };
     },
 
-    async ensure(options, progress) {
+    async ensure(progress) {
       lifetimeMs(deps.env);
       const { held, strays } = pool();
       const state = held === null ? UNKNOWN : readState(workspace, held.entry.name);
       const verdict = held === null ? null : await judge(held, state);
       const kept = held !== null && verdict !== null && !('retire' in verdict) ? { app: held, verdict } : null;
       if (kept !== null && 'keep' in kept.verdict) {
-        progress(`instance ${kept.app.record.application}  held, on ${state.settings?.label ?? 'unknown settings'}${kept.verdict.keep === 'busy' ? ', and another run in this worktree is driving on it' : ''}`);
+        progress(`instance ${kept.app.record.application}  held, on ${standingLabel(standingOf(state))}${kept.verdict.keep === 'busy' ? ', and another run in this worktree is driving on it' : ''}`);
       }
-      const view = (app: Held, created: boolean): InstanceView => ({ id: app.record.application, name: app.entry.name, created, settings: readState(workspace, app.entry.name).settings?.label ?? 'unknown settings' });
-      if (strays.length === 0 && kept !== null && 'keep' in kept.verdict && !options.willChange) return { views: [view(kept.app, false)], created: null };
+      const view = (app: Held, created: boolean): InstanceView => ({ id: app.record.application, name: app.entry.name, created, settings: standingLabel(standingOf(readState(workspace, app.entry.name))) });
+      if (strays.length === 0 && kept !== null && 'keep' in kept.verdict) return { views: [view(kept.app, false)], created: null };
 
       const open = await platform.open();
       const listed = await listing(open);
@@ -414,21 +352,20 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
 
       let failure: unknown;
       if (kept !== null && 'repair' in kept.verdict) {
-        progress(`settings changing ${kept.app.record.application} from ${state.settings?.label ?? 'unknown settings'} to standard, because ${kept.verdict.repair}`);
-        await moveTo(open, kept.app, STANDARD).then((moved) => progress(changedLine(STANDARD, kept.app.record.application, moved)), (error: unknown) => (failure = error));
+        progress(`settings changing ${kept.app.record.application} from ${standingLabel(standingOf(state))} to standard, because ${kept.verdict.repair}`);
+        await toStandard(open, kept.app).then((moved) => progress(changedLine(kept.app.record.application, moved)), (error: unknown) => (failure = error));
       }
       let created: Held | null = null;
       if (kept === null) created = await create(open, listed.at, progress).catch((error: unknown) => ((failure = error), null));
 
       await reap(open, { ...listed, applications: listed.applications.filter((application) => !retired.has(application.name)) }, progress);
       if (failure !== undefined) throw failure;
-      return { views: [...(kept === null ? [] : [view(kept.app, false)]), ...(created === null ? [] : [view(created, true)])], created: created === null ? null : describe(created, STANDARD) };
+      return { views: [...(kept === null ? [] : [view(kept.app, false)]), ...(created === null ? [] : [view(created, true)])], created: created === null ? null : describe(created, readState(workspace, created.entry.name)) };
     },
 
-    async apply(group, progress) {
-      const to = group.settings;
+    async drive() {
       const app = pool().held;
-      if (app === null) throw new VerifyFailure('NOT_READY', 'this worktree holds no application to put on the settings of a group', '{cli} up');
+      if (app === null) throw new VerifyFailure('NOT_READY', 'this worktree holds no application for a run to drive on', '{cli} up');
       const id = app.record.application;
       const name = app.entry.name;
       const state = readState(workspace, name);
@@ -437,25 +374,15 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
         throw new VerifyFailure('DEVICE_BUSY', `another run in this worktree (pid ${other.pid}) is driving on ${id}, and a worktree has one application, which serves one run at a time`, 'let that run finish, then rerun');
       }
       const keys = await keysOf(app);
-      let changed = false;
-      const live = state.settings?.key === to.key ? await environment(app.record.publishableKey) : null;
-      if (live !== null && live.status === 200 && compareWith(to, live.json).differing.length === 0) {
-        progress(`settings ${to.label}  already on ${id}`);
-      } else {
-        progress(`settings changing ${id} from ${state.settings?.label ?? 'unknown settings'} to ${to.declared === null ? `standard, for ${group.specs[0]?.path ?? 'this run'}` : `${to.label}, which ${to.askedBy} declares`}`);
-        progress(changedLine(to, id, await moveTo(await platform.open(), app, to)));
-        changed = true;
-      }
-      writeState(workspace, name, { settings: to, drivers: [self] });
+      writeState(workspace, name, { ...state, drivers: [self] });
       return {
         id,
         name,
         keys,
-        changed,
-        async stillApplied() {
+        async stillStandard() {
           const shown = await environment(app.record.publishableKey);
           if (shown.status !== 200) throw unanswered(app, shown.status);
-          return compareWith(to, shown.json).differing.length === 0;
+          return compareWithStandard(shown.json).differing.length === 0;
         },
       };
     },

@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, afterEach, before, beforeEach, describe, it } from 'node:test';
 import type { Report } from 'e2e';
-import { mergeGroupReports, protectGitHubTokens, reportToGitHub } from '../src/core/github-report.ts';
+import { protectGitHubTokens, reportToGitHub, withFailure } from '../src/core/github-report.ts';
 import { redact } from '../specs/support/secret.ts';
 import { VerifyFailure, type EvidencePath, type EvidenceRecord } from '../src/core/types.ts';
 
@@ -38,7 +38,7 @@ function attempt(index: number, status: 'passed' | 'failed') {
   };
 }
 
-function groupReport(selected: readonly string[], startedAt: string, finishedAt: string): Report {
+function e2eReport(selected: readonly string[], startedAt: string, finishedAt: string): Report {
   const results = ALL.map((row, index) => {
     const ran = selected.includes(row.file);
     return {
@@ -83,26 +83,15 @@ function groupReport(selected: readonly string[], startedAt: string, finishedAt:
   } as unknown as Report;
 }
 
-const GROUPS = [
-  groupReport([ALL[0]!.file], '2026-10-06T13:58:00.000Z', '2026-10-06T13:58:30.000Z'),
-  groupReport([ALL[1]!.file], '2026-10-06T13:58:31.000Z', '2026-10-06T13:59:00.000Z'),
-  groupReport([ALL[2]!.file], '2026-10-06T13:59:01.000Z', '2026-10-06T13:59:20.000Z'),
-] as const;
+const REPORT = e2eReport(ALL.map((row) => row.file), '2026-10-06T13:58:00.000Z', '2026-10-06T13:59:20.000Z');
 
-describe('mergeGroupReports', () => {
-  it('keeps the result of the group that ran each test, and spans the run from the first group to the last', () => {
-    const merged = mergeGroupReports(GROUPS, []);
-    assert.deepEqual(merged.run.results.map((result) => [result.selected, result.status]), [[true, 'passed'], [true, 'flaky'], [true, 'passed']]);
-    assert.equal(merged.run.startedAt, '2026-10-06T13:58:00.000Z');
-    assert.equal(merged.run.finishedAt, '2026-10-06T13:59:20.000Z');
-    assert.equal(merged.run.status, 'passed');
-  });
-
-  it('is a failed run when a group did not run, though every report it has passed', () => {
-    const merged = mergeGroupReports([GROUPS[0]], [{ category: 'infrastructure', code: 'E2E_CRASHED', message: 'MFA required: e2e exited 1', retryable: false }]);
-    assert.equal(merged.run.status, 'failed');
-    assert.equal(merged.run.exitCode, 1);
-    assert.deepEqual(merged.run.errors.map((error) => error.message), ['MFA required: e2e exited 1']);
+describe('the report of a run that failed outside e2e', () => {
+  it('is a failed run with the failure among its errors, though every test passed', () => {
+    const failed = withFailure(REPORT, new VerifyFailure('INSTANCE_MISCONFIGURED', 'the instance no longer showed the standard settings', 'rerun'));
+    assert.equal(failed.run.status, 'failed');
+    assert.equal(failed.run.exitCode, 1);
+    assert.deepEqual(failed.run.errors.map((error) => [error.code, error.message]), [['INSTANCE_MISCONFIGURED', 'the instance no longer showed the standard settings']]);
+    assert.equal(withFailure(REPORT, null), REPORT);
   });
 });
 
@@ -175,22 +164,16 @@ describe('reportToGitHub', () => {
       GITHUB_TOKEN: TOKEN,
     });
 
-  const record = (tainted: readonly string[] = [], reports: readonly Report[] = GROUPS): EvidenceRecord =>
-    ({
-      platform: 'ios',
-      gitHead: '0123456789abcdef0123456789abcdef01234567',
-      tainted,
-      settings: reports.map((report, index) => {
-        const file = join(scratch, `e2e-${index}`, 'report.json') as EvidencePath;
-        mkdirSync(join(scratch, `e2e-${index}`), { recursive: true });
-        writeFileSync(file, JSON.stringify(report));
-        return { label: `group ${index + 1}`, e2eReport: file };
-      }),
-    }) as unknown as EvidenceRecord;
+  const record = (tainted: readonly string[] = []): EvidenceRecord => {
+    const file = join(scratch, 'e2e', 'report.json') as EvidencePath;
+    mkdirSync(join(scratch, 'e2e'), { recursive: true });
+    writeFileSync(file, JSON.stringify(REPORT));
+    return { platform: 'ios', gitHead: '0123456789abcdef0123456789abcdef01234567', tainted, e2eReport: file } as unknown as EvidenceRecord;
+  };
 
-  it('posts one comment for a run of three groups and updates that comment on the next run', async () => {
+  it('posts one comment for a run and updates that comment on the next run', async () => {
     onActions('issue_comment');
-    const first = await reportToGitHub({ record: record(), failures: [], packageDir: scratch });
+    const first = await reportToGitHub({ record: record(), failure: null, packageDir: scratch });
     assert.deepEqual(first, ['https://github.example/pull/7#issuecomment-1']);
     assert.deepEqual(requests, [`GET /repos/clerk/unit/issues/7/comments Bearer ${TOKEN}`, `POST /repos/clerk/unit/issues/7/comments Bearer ${TOKEN}`]);
     const body = comments[0]!.body;
@@ -202,22 +185,22 @@ describe('reportToGitHub', () => {
     assert.match(readFileSync(join(scratch, 'summary.md'), 'utf8'), /1 flaky test passed on a retry/);
 
     requests = [];
-    await reportToGitHub({ record: record(), failures: [], packageDir: scratch });
+    await reportToGitHub({ record: record(), failure: null, packageDir: scratch });
     assert.deepEqual(requests.map((line) => line.split(' ').slice(0, 2).join(' ')), ['GET /repos/clerk/unit/issues/7/comments', 'PATCH /repos/clerk/unit/issues/comments/1']);
     assert.equal(comments.length, 1);
   });
 
-  it('names a group that did not run in full, so a comment with fewer tests is not green', async () => {
+  it('names a failure outside e2e, so a comment on a run whose tests passed is not green', async () => {
     onActions('issue_comment');
-    await reportToGitHub({ record: record([], [GROUPS[0]]), failures: [{ label: 'MFA required', failure: new VerifyFailure('E2E_CRASHED', 'e2e exited 1 before writing a report', 'read e2e.log') }], packageDir: scratch });
-    assert.match(comments[0]!.body, /E2E_CRASHED.* MFA required: e2e exited 1 before writing a report/);
+    await reportToGitHub({ record: record(), failure: new VerifyFailure('INSTANCE_MISCONFIGURED', 'settings a test changed could not be restored', 'rerun'), packageDir: scratch });
+    assert.match(comments[0]!.body, /INSTANCE_MISCONFIGURED.* settings a test changed could not be restored/);
     assert.doesNotMatch(comments[0]!.body.split('\n')[1]!, /🟢/);
   });
 
   it('says why nothing was posted and does not throw when GitHub refuses the token', async () => {
     onActions('issue_comment');
     refuses = true;
-    const lines = await reportToGitHub({ record: record(), failures: [], packageDir: scratch });
+    const lines = await reportToGitHub({ record: record(), failure: null, packageDir: scratch });
     assert.equal(lines.length, 1);
     assert.match(lines[0]!, /^not reported: the token cannot comment on clerk\/unit#7/);
     assert.equal(comments.length, 0);
@@ -227,7 +210,7 @@ describe('reportToGitHub', () => {
     onActions('workflow_dispatch');
     writeFileSync(join(scratch, 'event.json'), '{}');
     process.env.GITHUB_REF = 'refs/heads/main';
-    const lines = await reportToGitHub({ record: record(), failures: [], packageDir: scratch });
+    const lines = await reportToGitHub({ record: record(), failure: null, packageDir: scratch });
     assert.deepEqual(lines, ['not posted: workflow_dispatch is not a pull request; written to the job summary']);
     assert.deepEqual(requests, []);
     assert.match(readFileSync(join(scratch, 'summary.md'), 'utf8'), /e2e ios/);
@@ -235,10 +218,10 @@ describe('reportToGitHub', () => {
 
   it('reports nothing for a run that holds a secret value, and nothing outside GitHub Actions', async () => {
     onActions('issue_comment');
-    assert.deepEqual(await reportToGitHub({ record: record(['e2e.log']), failures: [], packageDir: scratch }), ['not reported: a file of this run holds a secret value']);
+    assert.deepEqual(await reportToGitHub({ record: record(['e2e.log']), failure: null, packageDir: scratch }), ['not reported: a file of this run holds a secret value']);
     assert.equal(readFileSync(join(scratch, 'summary.md'), 'utf8'), '');
     delete process.env.GITHUB_ACTIONS;
-    assert.deepEqual(await reportToGitHub({ record: record(), failures: [], packageDir: scratch }), ['not posted: not running on GitHub Actions']);
+    assert.deepEqual(await reportToGitHub({ record: record(), failure: null, packageDir: scratch }), ['not posted: not running on GitHub Actions']);
     assert.deepEqual(requests, []);
   });
 

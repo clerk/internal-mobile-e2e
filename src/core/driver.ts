@@ -400,7 +400,7 @@ export function watchDriver(stateDir: string, runDir: EvidencePath, alive: Alive
       if (found.kind !== 'stuck') return;
       cleared = found;
       keep('daemon-that-did-not-start.log', 'daemon.log', 'the start of the file', 'The daemon that failed to start left no daemon.log.');
-      said.push(`Before a group of tests started, the CLI removed the daemon.json that named pid ${found.pid}, which was not running, so that e2e could start a new daemon. The CLI does this once in a run.`);
+      said.push(`Before the tests started, the CLI removed the daemon.json that named pid ${found.pid}, which was not running, so that e2e could start a new daemon. The CLI does this once in a run.`);
       progress(`driver  removed the agent-device registration of pid ${found.pid}, which is not running and has no start time; a daemon failed to start, and agent-device would refuse every command until the file was gone`);
     },
     daemonThatDidNotStart() {

@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readdirSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { BACKEND_API_HOST, createClerkBackends, type ClerkBackend } from '../clerk.ts';
 import { currentProcess, isRunning, sleep as defaultSleep, type Runner } from '../exec.ts';
 import type { InstanceKeys } from '../keys.ts';
@@ -7,22 +7,20 @@ import { count } from '../state.ts';
 import { newEntryId, takeSlotLock, type Workspace } from '../workspace.ts';
 import { VerifyFailure, type ApplicationView, type DoctorCheck, type InstanceView, type ProcessRef } from '../types.ts';
 import { createPlatform, describeCredential, type Platform } from './platform.ts';
-import { STANDARD_FILE, declaredIn, describeDifference, readSpecText, settingsOf, straySettingsFile, type SettingsGroup } from './settings.ts';
-import { createThrowaway, openApplications, type HeldApplication, type Throwaway } from './throwaway.ts';
+import { STANDARD_FILE, describeDifference } from './settings.ts';
+import { createThrowaway, openApplications, standingLabel, type HeldApplication, type Throwaway } from './throwaway.ts';
 
-export interface AppliedInstance {
+export interface Driving {
   readonly keys: InstanceKeys;
   readonly instance: { readonly id: string; readonly name: string };
-  readonly changed: boolean;
-  stillApplied(): Promise<boolean>;
+  stillStandard(): Promise<boolean>;
   release(): Promise<void>;
 }
 
 export interface Instances {
   access(): Promise<string>;
-  recordedKey(): string | null;
-  ensure(options: { readonly willChange: boolean }, progress: (line: string) => void): Promise<readonly InstanceView[]>;
-  apply(group: SettingsGroup, progress: (line: string) => void): Promise<AppliedInstance>;
+  ensure(progress: (line: string) => void): Promise<readonly InstanceView[]>;
+  drive(): Promise<Driving>;
   keys(): InstanceKeys;
   clerk(): ClerkBackend;
   stopDriving(): Promise<void>;
@@ -45,14 +43,6 @@ export function check(id: DoctorCheck['id'], ok: boolean, detail: string, fix: s
   return ok ? { id, ok, detail } : { id, ok, detail, fix };
 }
 
-function specFiles(dir: string): string[] {
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(dir, entry.name);
-    return entry.isDirectory() ? specFiles(path) : entry.name.endsWith('.e2e.ts') ? [path] : [];
-  });
-}
-
 export function createInstances(deps: InstancesDeps): Instances {
   const { workspace, env } = deps;
   const sleep = deps.sleep ?? defaultSleep;
@@ -70,11 +60,11 @@ export function createInstances(deps: InstancesDeps): Instances {
     ...(deps.now === undefined ? {} : { now: deps.now }),
   });
   let reaching: Promise<string> | undefined;
-  let applied: AppliedInstance | undefined;
+  let driving: Driving | undefined;
 
-  const current = (): AppliedInstance => {
-    if (applied === undefined) throw new VerifyFailure('NOT_READY', 'no instance is applied: a spec asked for a user or a launch outside the part of a run that drives the device', 'report this as a verify bug');
-    return applied;
+  const current = (): Driving => {
+    if (driving === undefined) throw new VerifyFailure('NOT_READY', 'no instance is driven: a spec asked for a user or a launch outside the part of a run that drives the device', 'report this as a verify bug');
+    return driving;
   };
   const appliedClerk = backends(() => current().keys);
 
@@ -106,22 +96,6 @@ export function createInstances(deps: InstancesDeps): Instances {
 
   const ownKeyAccepted = async (keys: InstanceKeys): Promise<void> => void (await backends(() => keys).userCount());
 
-  function declarations(): { readonly declaring: number } | { readonly refused: VerifyFailure } {
-    const stray = straySettingsFile(workspace.packageDir);
-    if (stray !== null) return { refused: stray };
-    let declaring = 0;
-    for (const file of specFiles(join(workspace.packageDir, 'specs')).sort()) {
-      const path = relative(workspace.packageDir, file).split(sep).join('/');
-      try {
-        if (settingsOf(declaredIn(readSpecText(workspace.packageDir, path), path), path).declared !== null) declaring += 1;
-      } catch (error) {
-        if (!(error instanceof VerifyFailure)) throw error;
-        return { refused: error };
-      }
-    }
-    return { declaring };
-  }
-
   async function settingsCheck(): Promise<DoctorCheck> {
     const details: string[] = [];
     const fixes: string[] = [];
@@ -129,36 +103,24 @@ export function createInstances(deps: InstancesDeps): Instances {
       const inspected = await throwaway.inspect();
       if (inspected === null) details.push(`none created yet; up creates one application from ${STANDARD_FILE}`);
       else {
-        const { id, settings } = inspected.application;
+        const { id, standing } = inspected.application;
         const { found } = inspected;
         if (found === 'gone') {
           details.push(`Clerk no longer serves ${id}`);
           fixes.push('{cli} up creates a new application');
-        } else if (settings === null) {
+        } else if (standing.kind === 'unknown') {
           details.push(`${id} has no settings recorded`);
           fixes.push('{cli} up returns it to the standard settings');
         } else if (found.differing.length > 0) {
-          details.push(`${id} is recorded as on ${settings.label} and shows ${found.differing.slice(0, 5).map((d) => describeDifference(d, 'those settings expect')).join('; ')}`);
+          details.push(`${id} is recorded as on standard and shows ${found.differing.slice(0, 5).map((d) => describeDifference(d, 'those settings expect')).join('; ')}`);
           fixes.push('{cli} up returns it to the standard settings');
         } else {
-          details.push(
-            [
-              `${id} is on ${settings.label}${settings.askedBy === null ? '' : `, which ${settings.askedBy} asked for`}`,
-              `${found.compared} settings match ${STANDARD_FILE}${settings.declared === null ? '' : ' with that declaration'}`,
-            ].join('; '),
-          );
+          details.push(`${id} is on standard; ${found.compared} settings match ${STANDARD_FILE}`);
         }
       }
     } catch (error) {
       details.push(`could not read an environment: ${(error as Error).message}`);
       fixes.push('check network access to *.clerk.accounts.dev');
-    }
-    const scanned = declarations();
-    if ('refused' in scanned) {
-      details.push(scanned.refused.message);
-      fixes.push(scanned.refused.fix);
-    } else {
-      details.push(scanned.declaring === 1 ? '1 spec file declares settings' : `${scanned.declaring} spec files declare settings`);
     }
     return check('settings', fixes.length === 0, details.join('; '), fixes.join('; '));
   }
@@ -173,9 +135,9 @@ export function createInstances(deps: InstancesDeps): Instances {
     }
   }
 
-  async function ensure(options: { readonly willChange: boolean }, progress: (line: string) => void): Promise<readonly InstanceView[]> {
+  async function ensure(progress: (line: string) => void): Promise<readonly InstanceView[]> {
     progress(`instances ${await access()}`);
-    const up = await throwaway.ensure(options, progress);
+    const up = await throwaway.ensure(progress);
     if (up.created !== null) await ownKeyAccepted(await up.created.keys());
     return up.views;
   }
@@ -198,7 +160,7 @@ export function createInstances(deps: InstancesDeps): Instances {
       }
       const started = Date.now();
       try {
-        const [made] = await ensure({ willChange: false }, progress);
+        const [made] = await ensure(progress);
         const api = await apiCheck(throwaway.held());
         const inspected = await settingsCheck();
         const finished = await finish(workspace, { keepApplications: false }, progress);
@@ -214,27 +176,25 @@ export function createInstances(deps: InstancesDeps): Instances {
 
   return {
     access,
-    recordedKey: () => throwaway.held()?.settings?.key ?? null,
     keys: () => current().keys,
     clerk: () => {
       current();
       return appliedClerk;
     },
-    ensure: (options, progress) => locked(() => ensure(options, progress)),
+    ensure: (progress) => locked(() => ensure(progress)),
 
-    async apply(group, progress) {
-      if (applied !== undefined) throw new Error('an instance is still applied: release it before applying the next group');
-      const application = await locked(() => throwaway.apply(group, progress));
-      applied = {
+    async drive() {
+      if (driving !== undefined) throw new Error('an instance is still driven: release it before driving it again');
+      const application = await locked(() => throwaway.drive());
+      driving = {
         keys: application.keys,
         instance: { id: application.id, name: application.name },
-        changed: application.changed,
-        stillApplied: application.stillApplied,
+        stillStandard: application.stillStandard,
         release: async () => {
-          applied = undefined;
+          driving = undefined;
         },
       };
-      return applied;
+      return driving;
     },
 
     stopDriving: () => locked(throwaway.stopDriving),
@@ -247,7 +207,7 @@ export function createInstances(deps: InstancesDeps): Instances {
         return check('instances', false, `${prefix}${failure.message}`, failure.fix);
       };
       const held = throwaway.held();
-      const holding = held === null ? 'none created yet' : `${held.id} (${held.name}) on ${held.settings?.label ?? 'unknown settings'}`;
+      const holding = held === null ? 'none created yet' : `${held.id} (${held.name}) on ${standingLabel(held.standing)}`;
       let reaches: DoctorCheck;
       try {
         await platform.requireScopes();

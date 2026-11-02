@@ -554,7 +554,7 @@ describe('the driver logs a run keeps', () => {
     assert.deepEqual(w.summary().slice(0, 5), [
       `At the start of the run daemon.json named pid ${GONE}, which was not running, and it carried no start time, which is what a daemon that fails to start leaves; agent-device refuses that registration and never removes it.`,
       `daemon-that-did-not-start.log is the whole of daemon.log as it was when the CLI removed that registration: ${lastWords.length} bytes. ${lines(2, 1, 1)}`,
-      `Before a group of tests started, the CLI removed the daemon.json that named pid ${GONE}, which was not running, so that e2e could start a new daemon. The CLI does this once in a run.`,
+      `Before the tests started, the CLI removed the daemon.json that named pid ${GONE}, which was not running, so that e2e could start a new daemon. The CLI does this once in a run.`,
       'At the end of the run there was no daemon.json, so no agent-device daemon was registered.',
       `daemon.log is the whole of daemon.log, which was written or rewritten during this run: ${NEXT_PORT.length} bytes. ${lines(1, 1)}`,
     ]);
