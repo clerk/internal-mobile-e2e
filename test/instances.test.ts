@@ -20,7 +20,7 @@ import { createOutput, takePlatformKey } from '../src/core/cli.ts';
 import { Secret, redact } from '../specs/support/secret.ts';
 import { down, type Deps } from '../src/core/verbs.ts';
 import { newEntryId, openWorkspace, takeSlotLock } from '../src/core/workspace.ts';
-import { RETRYABLE, VerifyFailure, type DeviceBackend, type HostAdapter, type InstanceSettings, type InstanceView, type LocalLease, type PublishableKey, type ScratchPath } from '../src/core/types.ts';
+import { RETRYABLE, VerifyFailure, type DeviceBackend, type HostAdapter, type InstanceSettings, type InstanceView, type Json, type LocalLease, type PublishableKey, type ScratchPath } from '../src/core/types.ts';
 import { PLATFORM_KEY, PLATFORM_SCOPES, SECRET_KEY_SCOPE, WORKSPACE, fakeClerk, type FakeClerkOptions } from '../testing/fake-clerk.ts';
 
 const T0 = Date.parse('2026-10-05T12:00:00Z');
@@ -368,26 +368,36 @@ describe('what Clerk says to a config change', () => {
     return { fake, workspace, created };
   };
 
-  it('answers with the whole object of each key the body named, and a dry run changes nothing', async () => {
+  it('answers with the whole object of each key the body named, before and after, and a dry run changes nothing', async () => {
     const { fake, workspace, created } = await opened();
+    const multiFactor = fake.live()[0]!.config.auth_multi_factor as Record<string, Json>;
     const dry = await workspace.configure(created, MFA.config, { dryRun: true });
-    assert.deepEqual(dry.after, { auth_multi_factor: { required_for_sign_up: true } });
+    assert.deepEqual(dry.before, { auth_multi_factor: multiFactor });
+    assert.deepEqual(dry.after, { auth_multi_factor: { ...multiFactor, required_for_sign_up: true } }, 'a PATCH merges into what the instance has');
     assert.equal(fake.live()[0]!.environment['user_settings.sign_up.mfa.required'], false);
-    await workspace.configure(created, standardFile().config);
     const real = await workspace.configure(created, MFA.config);
-    assert.deepEqual(real.after, { auth_multi_factor: { ...(standardFile().config.auth_multi_factor as object), required_for_sign_up: true } }, 'a PATCH merges into what the instance has');
+    assert.deepEqual(real.after, dry.after);
     assert.equal(fake.live()[0]!.environment['user_settings.sign_up.mfa.required'], true);
+  });
+
+  it('reads the config of the keys it names, or all of it, without the version', async () => {
+    const { fake, workspace, created } = await opened();
+    const config = fake.live()[0]!.config;
+    assert.deepEqual(await workspace.readConfig(created, ['auth_multi_factor', 'restrictions']), { auth_multi_factor: config.auth_multi_factor, restrictions: config.restrictions });
+    assert.deepEqual(await workspace.readConfig(created, []), config);
+    assert.deepEqual(fake.platformRequests().filter((request) => request.method === 'GET' && request.url.includes('/config')).map((request) => request.url.split('/config')[1]), ['?keys=auth_multi_factor&keys=restrictions', '']);
   });
 
   it('turns a refused body into a refusal that names the key when Clerk names it', async () => {
     const { fake, workspace, created } = await opened();
+    const fresh = structuredClone(fake.live()[0]!.config);
     fake.state.refusals.push({ path: 'auth_email.no_such_toggle', status: 400, code: 'unknown_config_key', param: 'auth_email.no_such_toggle', message: 'is not a config key' });
     await assert.rejects(workspace.configure(created, { auth_email: { no_such_toggle: true } }), (error: SettingsRefused) => error instanceof SettingsRefused && error.code === 'INSTANCE_MISCONFIGURED' && error.param === 'auth_email.no_such_toggle' && error.said === 'auth_email.no_such_toggle (400 unknown_config_key): is not a config key');
     fake.state.refusals.push({ path: 'auth_attack_protection.pii_protection_enabled', value: false, status: 409, code: 'user_settings_invalid', message: 'the settings are not valid together' });
     await assert.rejects(workspace.configure(created, { auth_attack_protection: { pii_protection_enabled: false } }), (error: SettingsRefused) => error instanceof SettingsRefused && error.param === null && error.said === '409 user_settings_invalid: the settings are not valid together');
     fake.state.refusals.push({ path: 'compliance.legal_consent.enabled', value: true, status: 422, code: 'form_param_missing', param: ['terms_of_service_url', 'privacy_policy_url'], message: 'is required' });
     await assert.rejects(workspace.configure(created, { compliance: { legal_consent: { enabled: true } } }), (error: SettingsRefused) => error instanceof SettingsRefused && error.param === 'terms_of_service_url' && error.said === 'terms_of_service_url (422 form_param_missing): is required', 'any 4xx that is about the body is a refusal, and a code two errors share is said once');
-    assert.deepEqual(fake.live()[0]!.config, {}, 'a refused body applied nothing');
+    assert.deepEqual(fake.live()[0]!.config, fresh, 'a refused body applied nothing');
   });
 
   it('reads a 4xx that names a parameter as a refusal of the body whatever its status, except a rate limit', async () => {
