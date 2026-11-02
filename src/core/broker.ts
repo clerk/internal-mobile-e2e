@@ -3,9 +3,9 @@ import { writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import {
-  ABOUT_TO_LAUNCH,
   BACKEND_API_URL,
   BACKEND_CALLS,
+  CLI_CALLS,
   HARNESS_ROLES,
   PATH_PARAM,
   SYSTEM_PERMISSIONS,
@@ -19,10 +19,13 @@ import {
   parseTestPhone,
   typedPassword,
   type BackendCall,
+  type CliCall,
 } from '../../specs/support/clerk.ts';
 import { runIdParts } from '../../specs/support/inputs.ts';
 import { protect } from '../../specs/support/secret.ts';
 import { ownKeyRefused, userLimitReached } from './clerk.ts';
+import type { Driving } from './instances/instances.ts';
+import { SettingsNotShown, SettingsRefused, parseSettingsRequest } from './instances/settings.ts';
 import type { InstanceKeys } from './keys.ts';
 import { newEntryId, type Workspace } from './workspace.ts';
 import { VerifyFailure, type RunId, type ScratchPath, type TestEmail } from './types.ts';
@@ -35,6 +38,7 @@ export interface BrokerDeps {
   readonly keys: () => InstanceKeys;
   readonly fetch: typeof fetch;
   readonly beforeLaunch: () => Promise<void>;
+  readonly settings: Pick<Driving, 'useSettings' | 'restore'>;
 }
 
 export interface Broker {
@@ -272,11 +276,38 @@ export async function startBroker(run: RunId, workspace: Workspace, scratch: Scr
     }
   }
 
+  async function settled(work: () => Promise<unknown>): Promise<Answer> {
+    try {
+      return { status: 200, body: JSON.stringify(await work()) };
+    } catch (error) {
+      if (error instanceof SettingsRefused) return failure(422, 'verify_settings_refused', error);
+      if (error instanceof SettingsNotShown) return failure(503, 'verify_settings_not_shown', error);
+      if (error instanceof VerifyFailure) return failure(503, 'verify_settings_failed', error);
+      return clerkError(503, 'verify_settings_failed', (error as Error).message ?? String(error));
+    }
+  }
+
+  const cliHandlers: Record<CliCall, (body: Readonly<Record<string, unknown>>) => Promise<Answer>> = {
+    aboutToLaunch: readyToLaunch,
+    async useSettings(body) {
+      const parsed = parseSettingsRequest(body);
+      if ('refused' in parsed) return refused(parsed.refused);
+      return settled(() => deps.settings.useSettings(parsed.request, parsed.at));
+    },
+    async restoreSettings(body) {
+      if (Object.keys(body).length > 0) return refused(`it carries ${Object.keys(body).join(', ')}, and a restore carries nothing`);
+      return settled(async () => (await deps.settings.restore(), {}));
+    },
+  };
+
+  const cliCallFor = (method: string | undefined, path: string): CliCall | undefined =>
+    (Object.keys(CLI_CALLS) as CliCall[]).find((call) => CLI_CALLS[call].method === method && `${STAND_IN_PATH}${CLI_CALLS[call].path}` === path);
+
   async function answer(request: IncomingMessage): Promise<Answer> {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
-    if (request.method === ABOUT_TO_LAUNCH.method && url.pathname === `${STAND_IN_PATH}${ABOUT_TO_LAUNCH.path}`) return readyToLaunch();
-    const found = guardFor(request.method, url.pathname);
-    if (found === undefined) return clerkError(404, 'verify_stand_in_unknown_call', `the verify CLI's stand-in for the Backend API has no ${request.method} ${url.pathname}; the tests make ${Object.values(BACKEND_CALLS).map((call) => `${call.method} ${call.path}`).join(', ')}`);
+    const cli = cliCallFor(request.method, url.pathname);
+    const found = cli === undefined ? guardFor(request.method, url.pathname) : undefined;
+    if (cli === undefined && found === undefined) return clerkError(404, 'verify_stand_in_unknown_call', `the verify CLI's stand-in for the Backend API has no ${request.method} ${url.pathname}; the tests make ${Object.values(BACKEND_CALLS).map((call) => `${call.method} ${call.path}`).join(', ')}`);
     let text = '';
     for await (const chunk of request) {
       text += chunk;
@@ -290,7 +321,8 @@ export async function startBroker(run: RunId, workspace: Workspace, scratch: Scr
     } catch {
       return refused('its body is not JSON');
     }
-    const { guard, params } = found;
+    if (cli !== undefined) return cliHandlers[cli](body);
+    const { guard, params } = found!;
     const asked: Asked = { params, query: url.searchParams, body };
     const why = await guard.refuses(asked);
     if (why !== null) return refused(why);

@@ -5,14 +5,18 @@ import { currentProcess, isRunning, sleep as defaultSleep, type Runner } from '.
 import type { InstanceKeys } from '../keys.ts';
 import { count } from '../state.ts';
 import { newEntryId, takeSlotLock, type Workspace } from '../workspace.ts';
-import { VerifyFailure, type ApplicationView, type DoctorCheck, type InstanceView, type ProcessRef } from '../types.ts';
+import type { SettingsRequest } from '../../../specs/support/types.ts';
+import { VerifyFailure, type ApplicationView, type DoctorCheck, type InstanceView, type ProcessRef, type SettingsChangeRecord } from '../types.ts';
 import { createPlatform, describeCredential, type Platform } from './platform.ts';
 import { STANDARD_FILE, describeDifference } from './settings.ts';
-import { createThrowaway, openApplications, standingLabel, type HeldApplication, type Throwaway } from './throwaway.ts';
+import { createThrowaway, openApplications, standingLabel, type Changed, type HeldApplication, type Throwaway } from './throwaway.ts';
 
 export interface Driving {
   readonly keys: InstanceKeys;
   readonly instance: { readonly id: string; readonly name: string };
+  useSettings(request: SettingsRequest, at: string | null): Promise<Changed>;
+  restore(): Promise<void>;
+  changes(): readonly SettingsChangeRecord[];
   stillStandard(): Promise<boolean>;
   release(): Promise<void>;
 }
@@ -110,7 +114,10 @@ export function createInstances(deps: InstancesDeps): Instances {
           fixes.push('{cli} up creates a new application');
         } else if (standing.kind === 'unknown') {
           details.push(`${id} has no settings recorded`);
-          fixes.push('{cli} up returns it to the standard settings');
+          fixes.push('{cli} up replaces it');
+        } else if (standing.kind === 'changed') {
+          details.push(`${id} has ${standingLabel(standing)}: ${standing.leaves.join(', ')}`);
+          fixes.push('{cli} up restores them');
         } else if (found.differing.length > 0) {
           details.push(`${id} is recorded as on standard and shows ${found.differing.slice(0, 5).map((d) => describeDifference(d, 'those settings expect')).join('; ')}`);
           fixes.push('{cli} up returns it to the standard settings');
@@ -186,9 +193,20 @@ export function createInstances(deps: InstancesDeps): Instances {
     async drive() {
       if (driving !== undefined) throw new Error('an instance is still driven: release it before driving it again');
       const application = await locked(() => throwaway.drive());
+      let changes: readonly SettingsChangeRecord[] = [];
       driving = {
         keys: application.keys,
         instance: { id: application.id, name: application.name },
+        async useSettings(request, at) {
+          const made = await locked(() => throwaway.change(request, at, deps.progress));
+          changes = [...changes, { at, changed: made.changed, shown: made.shown, restored: made.changed.length === 0 }];
+          return made;
+        },
+        async restore() {
+          await locked(() => throwaway.restore(deps.progress));
+          changes = changes.map((change) => ({ ...change, restored: true }));
+        },
+        changes: () => changes,
         stillStandard: application.stillStandard,
         release: async () => {
           driving = undefined;

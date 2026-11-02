@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { SettingLeaves, SettingsRequest } from '../../../specs/support/types.ts';
 import { VerifyFailure, type Json } from '../types.ts';
 
 export type Leaves = Readonly<Record<string, Json>>;
@@ -18,6 +19,23 @@ export const STANDARD_FILE = 'src/core/instances/base.json';
 const standard = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'base.json'), 'utf8')) as StandardFile;
 
 export const standardFile = (): StandardFile => standard;
+
+export interface LeafChange {
+  readonly leaf: string;
+  readonly from: Json;
+  readonly to: Json;
+}
+
+export interface Snapshot {
+  readonly config: Leaves;
+  readonly environment: Leaves;
+}
+
+export class SettingsNotShown extends VerifyFailure {
+  constructor(message: string, fix: string) {
+    super('INSTANCE_MISCONFIGURED', message, fix);
+  }
+}
 
 export class SettingsRefused extends VerifyFailure {
   readonly param: string | null;
@@ -54,13 +72,14 @@ export interface EnvironmentComparison {
   readonly differing: readonly EnvironmentDifference[];
 }
 
-export function compareEnvironment(expected: Leaves, live: Json): EnvironmentComparison {
-  const shown = flattenEnvironment(live);
-  const differing = Object.entries(expected).flatMap(([path, want]): EnvironmentDifference[] => {
+export const compareLeaves = (expected: Leaves, shown: Leaves): readonly EnvironmentDifference[] =>
+  Object.entries(expected).flatMap(([path, want]): EnvironmentDifference[] => {
     const found = Object.hasOwn(shown, path) ? shown[path] : undefined;
     return JSON.stringify(found) === JSON.stringify(want) ? [] : [{ path, expected: want, found }];
   });
-  return { compared: Object.keys(expected).length, differing };
+
+export function compareEnvironment(expected: Leaves, live: Json): EnvironmentComparison {
+  return { compared: Object.keys(expected).length, differing: compareLeaves(expected, flattenEnvironment(live)) };
 }
 
 export const describeDifference = (d: EnvironmentDifference, expectedBy = 'the file says'): string => `${d.path} is ${d.found === undefined ? 'absent' : JSON.stringify(d.found)}, and ${expectedBy} ${JSON.stringify(d.expected)}`;
@@ -87,3 +106,47 @@ export const sameLeaf = (a: Json | undefined, b: Json | undefined): boolean => a
 const keyOf = (value: Json): string => createHash('sha256').update(canonical(value)).digest('hex').slice(0, 12);
 
 export const BASE_KEY = keyOf({ config: standard.config, environment: standard.environment });
+
+export function nest(leaves: Leaves): JsonObject {
+  const root: Record<string, Json> = Object.create(null);
+  for (const [leaf, value] of Object.entries(leaves)) {
+    const path = leaf.split('.');
+    let node = root;
+    for (const key of path.slice(0, -1)) node = (node[key] ??= Object.create(null)) as Record<string, Json>;
+    node[path.at(-1)!] = value;
+  }
+  return root;
+}
+
+export const underneath = (pending: Snapshot | null, more: Snapshot): Snapshot =>
+  pending === null ? more : { config: { ...more.config, ...pending.config }, environment: { ...more.environment, ...pending.environment } };
+
+const CONFIG_LEAF = /^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$/;
+const ENVIRONMENT_LEAF = /^[A-Za-z0-9_]+(\[\d+\])*(\.[A-Za-z0-9_]+(\[\d+\])*)*$/;
+const SPEC_SITE = /^specs\/\S+\.e2e\.ts:\d+$/;
+
+const isScalar = (value: unknown): boolean => value === null || ['string', 'number', 'boolean'].includes(typeof value);
+
+function leavesOf(name: 'config' | 'environment', raw: unknown, pattern: RegExp): SettingLeaves | string {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return `${name} is not an object of dotted leaves and their values`;
+  const leaves = Object.keys(raw);
+  if (leaves.length === 0) return name === 'config' ? 'config names no leaf to change' : 'environment names no leaf; leave it out, and the CLI waits for any leaf of the environment to change';
+  for (const [leaf, value] of Object.entries(raw)) {
+    if (!pattern.test(leaf)) return `${name} has ${JSON.stringify(leaf)}, which is not a dotted leaf name`;
+    if (!(isScalar(value) || (Array.isArray(value) && value.every(isScalar)))) return `${name} leaf ${leaf} holds an object; write each leaf by its full dotted path, as in "auth_multi_factor.required_for_sign_up": true`;
+    const inside = leaves.find((other) => other.startsWith(`${leaf}.`));
+    if (inside !== undefined) return `${name} names both ${leaf} and ${inside}, which is inside it`;
+  }
+  return raw as SettingLeaves;
+}
+
+export function parseSettingsRequest(body: Readonly<Record<string, unknown>>): { readonly request: SettingsRequest; readonly at: string | null } | { readonly refused: string } {
+  const extra = Object.keys(body).filter((key) => !['config', 'environment', 'at'].includes(key));
+  if (extra.length > 0) return { refused: `it carries ${extra.join(', ')}, and host.useSettings sends only config, environment, and at` };
+  const config = leavesOf('config', body.config, CONFIG_LEAF);
+  if (typeof config === 'string') return { refused: config };
+  const environment = body.environment === undefined ? undefined : leavesOf('environment', body.environment, ENVIRONMENT_LEAF);
+  if (typeof environment === 'string') return { refused: environment };
+  const at = typeof body.at === 'string' && SPEC_SITE.test(body.at) ? body.at : null;
+  return { request: { config, ...(environment === undefined ? {} : { environment }) }, at };
+}

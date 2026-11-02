@@ -4,7 +4,7 @@ import { test as base } from '@e2e-dev/mobile';
 import { expect, type Locator } from 'e2e';
 import { resolvePackageBinaryFromModule } from '../src/core/tools.ts';
 import { busyWaits, onceTheRunnerIsFree, type BusyWait } from './support/busy-runner.ts';
-import { aboutToLaunch, testUsers } from './support/clerk.ts';
+import { aboutToLaunch, callSiteOf, restoreSettings, testUsers, useSettings } from './support/clerk.ts';
 import { ASSERTION_TIMEOUT_MS } from './support/config.ts';
 import { agentDevice, deviceCommand } from './support/device.ts';
 import { EVIDENCE_PACE, evidenceBlock, tapMarker } from './support/evidence.ts';
@@ -118,6 +118,7 @@ export function createTest(testApp: TestApp) {
       const tap = (control: Locator, busy: BusyWait): Promise<void> =>
         tapMarkedOnceUncovered(control, markTap, { timeoutMs: ASSERTION_TIMEOUT_MS, now: Date.now, wait: () => sleep(POLL_MS) }, busy);
 
+      let usedSettings = false;
       const host: HostFixture = {
         runId: RUN,
         app,
@@ -157,8 +158,16 @@ export function createTest(testApp: TestApp) {
           );
         },
         evidence: evidenceBlock(marker),
+        async useSettings(request) {
+          usedSettings = true;
+          await useSettings(clerk.access, request, callSiteOf(new Error().stack));
+        },
       };
-      await use(host);
+      try {
+        await use(host);
+      } finally {
+        if (usedSettings) await restoreSettings(clerk.access);
+      }
     },
   });
 

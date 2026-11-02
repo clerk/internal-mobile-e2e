@@ -347,6 +347,13 @@ export interface Viewport {
   readonly height: number;
 }
 
+export interface SettingsChangeRecord {
+  readonly at: string | null;
+  readonly changed: readonly { readonly leaf: string; readonly from: Json; readonly to: Json }[];
+  readonly shown: readonly string[];
+  readonly restored: boolean;
+}
+
 export interface EvidenceRecord {
   readonly run: RunId;
   readonly startedAt: string;
@@ -367,6 +374,7 @@ export interface EvidenceRecord {
   readonly appLog: EvidencePath | null;
   readonly e2eReport: EvidencePath;
   readonly identities: readonly { readonly email: TestEmail; readonly userId: string | null }[];
+  readonly settings: readonly SettingsChangeRecord[];
   readonly tainted: readonly EvidencePath[];
   readonly sealed: true;
 }

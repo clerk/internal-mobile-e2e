@@ -42,6 +42,7 @@ function partialRecord(dir: EvidencePath, run: RunId): Omit<EvidenceRecord, 'sea
     appLog: join(dir, 'app.log') as EvidencePath,
     e2eReport: join(dir, 'e2e', 'report.json') as EvidencePath,
     identities: [{ email: testEmail(run, 'maya'), userId: OWN_USER }],
+    settings: [],
   };
 }
 
@@ -289,6 +290,16 @@ describe('the evidence block of a pull request description', () => {
     assert.equal(refused(`text\n${start}\nno end`), `has \`${start}\` 1 times and \`${end}\` 0 times`);
     assert.equal(refused(`no start\n${end}\n`), `has \`${start}\` 0 times and \`${end}\` 1 times`);
     assert.equal(refused(`${end}\n${start}`), `has \`${end}\` before \`${start}\``);
+  });
+});
+
+describe('assertPublishable and the settings a test changed', () => {
+  it('rejects a run that left a change unrestored, though every result passed, and takes one whose changes were all restored', () => {
+    const { dir, run } = runDir();
+    const base = sealEvidence(dir, partialRecord(dir, run), []);
+    const change = { at: 'specs/features/session-tasks/setup-mfa.e2e.ts:8', changed: [{ leaf: 'auth_multi_factor.required_for_sign_up', from: false, to: true }], shown: ['user_settings.sign_up.mfa.required'], restored: true };
+    assert.equal(assertPublishable({ ...base, settings: [change] }, []).run, run);
+    assert.throws(() => assertPublishable({ ...base, settings: [change, { ...change, restored: false }] }, []), { code: 'EVIDENCE_UNSAFE', message: `run ${run} left settings a test changed unrestored: auth_multi_factor.required_for_sign_up` });
   });
 });
 

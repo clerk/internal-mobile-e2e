@@ -5,7 +5,7 @@ import { runIdParts, type ClerkAccess, type ClerkInstance } from './inputs.ts';
 import { PASSWORD_WORDS, runNames, type RunNames } from './names.ts';
 import { SHORTEST_SECRET, Secret, protect } from './secret.ts';
 import { commandsFor } from './typing.ts';
-import type { EmailOptions, OrganizationSeed, RunId, SecretLike, SeedOptions, SeededOrganization, SeededUser, TestEmail, TestPhone } from './types.ts';
+import type { EmailOptions, OrganizationSeed, RunId, SecretLike, SeedOptions, SeededOrganization, SeededUser, SettingsRequest, TestEmail, TestPhone } from './types.ts';
 
 export const BACKEND_API_URL = 'https://api.clerk.com/v1';
 
@@ -40,7 +40,15 @@ export const isHarnessRole = (value: unknown): value is HarnessRole => typeof va
 
 export const SYSTEM_PERMISSIONS = { query: 'org:sys_', limit: '100' } as const;
 
-export const ABOUT_TO_LAUNCH = { method: 'POST', path: '/about_to_launch' } as const;
+export const CLI_CALLS = {
+  aboutToLaunch: { method: 'POST', path: '/about_to_launch' },
+  useSettings: { method: 'POST', path: '/use_settings' },
+  restoreSettings: { method: 'POST', path: '/restore_settings' },
+} as const;
+
+export type CliCall = keyof typeof CLI_CALLS;
+
+const SETTINGS_TIMEOUT_MS = 180_000;
 
 export const TICKET_SECONDS = 120;
 
@@ -142,15 +150,46 @@ function endpoint(access: ClerkAccess): { readonly baseUrl: string; readonly bea
   return { baseUrl: access.url, bearer: new Secret('stand-in-token', readFileSync(access.tokenFile, 'utf8')) };
 }
 
+async function askTheCli(access: Extract<ClerkAccess, { kind: 'stand-in' }>, call: CliCall, body: unknown, timeoutMs: number, fetchImpl: typeof fetch): Promise<string | null> {
+  const { baseUrl, bearer } = endpoint(access);
+  const { method, path } = CLI_CALLS[call];
+  const response = await bearer.use('bapi-authorization', (plain) =>
+    fetchImpl(`${baseUrl}${path}`, {
+      method,
+      headers: { Authorization: `Bearer ${plain}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(timeoutMs),
+    }),
+  );
+  if (response.ok) return null;
+  const said = errorsOf({ status: response.status, json: await response.json().catch(() => null) }).map((error) => error.long_message ?? error.message ?? error.code);
+  return said.join('; ') || `it answered ${response.status}`;
+}
+
 export async function aboutToLaunch(access: ClerkAccess, fetchImpl: typeof fetch = fetch): Promise<void> {
   if (access.kind !== 'stand-in') return;
-  const { baseUrl, bearer } = endpoint(access);
-  const response = await bearer.use('bapi-authorization', (plain) =>
-    fetchImpl(`${baseUrl}${ABOUT_TO_LAUNCH.path}`, { method: ABOUT_TO_LAUNCH.method, headers: { Authorization: `Bearer ${plain}` }, signal: AbortSignal.timeout(60_000) }),
-  );
-  if (response.ok) return;
-  const said = errorsOf({ status: response.status, json: await response.json().catch(() => null) }).map((error) => error.long_message ?? error.message ?? error.code);
-  throw new Error(`the verify CLI was not ready for the app to launch: ${said.join('; ') || `it answered ${response.status}`}`);
+  const refused = await askTheCli(access, 'aboutToLaunch', undefined, 60_000, fetchImpl);
+  if (refused !== null) throw new Error(`the verify CLI was not ready for the app to launch: ${refused}`);
+}
+
+export async function useSettings(access: ClerkAccess, request: SettingsRequest, at: string | null, fetchImpl: typeof fetch = fetch): Promise<void> {
+  if (access.kind !== 'stand-in') throw new Error("host.useSettings needs the verify CLI, which holds the Platform API key that changes an instance's settings; run the spec with the CLI's run verb");
+  const refused = await askTheCli(access, 'useSettings', { ...request, at }, SETTINGS_TIMEOUT_MS, fetchImpl);
+  if (refused !== null) throw new Error(refused);
+}
+
+export async function restoreSettings(access: ClerkAccess, fetchImpl: typeof fetch = fetch): Promise<void> {
+  if (access.kind !== 'stand-in') return;
+  const refused = await askTheCli(access, 'restoreSettings', {}, SETTINGS_TIMEOUT_MS, fetchImpl);
+  if (refused !== null) throw new Error(`the verify CLI could not restore the settings this test changed: ${refused}`);
+}
+
+export function callSiteOf(stack: string | undefined): string | null {
+  const frame = /([^\s(]*\.e2e\.ts):(\d+):\d+/.exec(stack ?? '');
+  if (frame === null) return null;
+  const path = frame[1]!.replace(/^file:\/\//, '');
+  const specs = path.lastIndexOf('/specs/');
+  return specs < 0 ? null : `${path.slice(specs + 1)}:${frame[2]}`;
 }
 
 export function testUsers(clerk: ClerkInstance, run: RunId, fetchImpl: typeof fetch = fetch, names: RunNames = runNames(run)): TestUsers {

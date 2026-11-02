@@ -98,6 +98,14 @@ fs.appendFileSync('order.log', 'e2e opens the app with no arguments\\n');
       }
     }
   }
+  for (const asked of plan.settings || []) {
+    const answer = await fetch(process.env.CLERK_E2E_API_URL + '/use_settings', { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(asked) });
+    fs.appendFileSync('order.log', 'use_settings answered ' + answer.status + '\\n');
+  }
+  if (plan.restoresSettings) {
+    const answer = await fetch(process.env.CLERK_E2E_API_URL + '/restore_settings', { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: '{}' });
+    fs.appendFileSync('order.log', 'restore_settings answered ' + answer.status + '\\n');
+  }
   const results = [];
   for (const [index, file] of specs.entries()) {
     console.log('fake e2e runs ' + file);
@@ -156,6 +164,8 @@ interface FakeE2EPlan {
   readonly taps?: boolean;
   readonly launches?: boolean;
   readonly retriesTheOpen?: boolean;
+  readonly settings?: readonly Readonly<Record<string, unknown>>[];
+  readonly restoresSettings?: boolean;
   readonly driver?: {
     readonly refusesALeftoverRegistration?: boolean;
     readonly daemonFailsToStartIn?: readonly string[];
@@ -468,6 +478,54 @@ describe('a run', () => {
 
 
 
+});
+
+describe('a run whose test changes instance settings', () => {
+  const AT = 'specs/features/session-tasks/setup-mfa.e2e.ts:8';
+  const MFA = { config: { 'auth_multi_factor.required_for_sign_up': true }, environment: { 'user_settings.sign_up.mfa.required': true }, at: AT };
+  const AUTHENTICATOR_OFF = { config: { 'auth_multi_factor.authenticator_app.enabled': false } };
+  const required = (w: ReturnType<typeof world>) => (w.clerk.live()[0]!.config.auth_multi_factor as Record<string, unknown>).required_for_sign_up;
+  const order = (w: ReturnType<typeof world>) => readFileSync(join(w.dir, 'order.log'), 'utf8').trim().split('\n');
+
+  it('records each change in run.json, puts it back when the test ends, and ends on the standard settings', async () => {
+    const w = world({ specs: [SETUP_MFA], plan: { settings: [MFA, AUTHENTICATOR_OFF], restoresSettings: true } });
+    const { record } = await runVerb(w.deps(), RUN_ALL);
+    assert.deepEqual(order(w).slice(1), ['use_settings answered 200', 'use_settings answered 200', 'restore_settings answered 200']);
+    assert.deepEqual(record.settings, [
+      { at: AT, changed: [{ leaf: 'auth_multi_factor.required_for_sign_up', from: false, to: true }], shown: ['user_settings.sign_up.mfa.required'], restored: true },
+      { at: null, changed: [{ leaf: 'auth_multi_factor.authenticator_app.enabled', from: true, to: false }], shown: ['user_settings.attributes.authenticator_app.enabled'], restored: true },
+    ]);
+    assert.equal(required(w), false);
+    assert.equal(w.clerk.live()[0]!.environment['user_settings.attributes.authenticator_app.enabled'], true);
+    assert.deepEqual(statuses(record.results), ['passed setup-mfa.e2e.ts']);
+    assert.equal(assertPublishable(record, []).run, record.run);
+  });
+
+  it('puts back what a test changed after e2e exits, when the test process ended before it restored anything', async () => {
+    const w = world({ specs: [SETUP_MFA], plan: { settings: [MFA] } });
+    const { record } = await runVerb(w.deps(), RUN_ALL);
+    assert.equal(required(w), false);
+    assert.deepEqual(record.settings.map((change) => change.restored), [true]);
+    assert.ok(w.lines.includes(`settings restored auth_multi_factor.required_for_sign_up on ${w.clerk.live()[0]!.id}`), w.lines.join('\n'));
+  });
+
+  it('fails the run, and leaves the change pending for the next run, when the restore fails', async () => {
+    const w = world({ specs: [SETUP_MFA], plan: { settings: [MFA] } });
+    let failed = false;
+    w.hooks.push((line) => {
+      if (!failed && line.startsWith('settings auth_multi_factor.required_for_sign_up=true')) [failed, w.clerk.state.failConfigure] = [true, 1];
+    });
+    await assert.rejects(runVerb(w.deps(), RUN_ALL), (error: VerifyFailure) => error.code === 'NOT_READY' && error.message.startsWith('the settings a test changed could not be restored after the specs ended: ') && error.fix.endsWith('; the next {cli} run or up restores them before anything else'));
+    const record = w.lastRecord();
+    assert.deepEqual(record.settings.map((change) => change.restored), [false]);
+    assert.throws(() => assertPublishable(record, []), { code: 'EVIDENCE_UNSAFE', message: `run ${record.run} left settings a test changed unrestored: auth_multi_factor.required_for_sign_up` });
+    assert.equal(required(w), true);
+    w.lines.length = 0;
+    await runVerb(w.deps(), RUN_ALL);
+    const restoring = w.lines.indexOf(`settings restoring ${w.clerk.live()[0]!.id}, because a run ended without restoring auth_multi_factor.required_for_sign_up`);
+    assert.ok(restoring >= 0 && restoring < w.lines.findIndex((line) => line.startsWith('run ')), 'the next run restored it before its specs started');
+    assert.equal(required(w), false);
+  });
 });
 
 describe('a run whose spec seeds a user with a password', () => {

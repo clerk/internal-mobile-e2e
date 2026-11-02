@@ -329,6 +329,7 @@ interface Invoked {
   readonly exitCode: number;
   readonly standard: boolean;
   readonly unread: string | null;
+  readonly unrestored: VerifyFailure | null;
 }
 
 export async function runVerb(deps: Deps, command: Extract<Command, { verb: 'run' }>): Promise<RunResult> {
@@ -364,12 +365,18 @@ export async function runVerb(deps: Deps, command: Extract<Command, { verb: 'run
         workspace.append({ id: recorderEntry, kind: 'process', what: 'recorder', pid: recording.process.pid, startedAt: new Date(recording.process.startedAt).toISOString(), platform });
         return { recording, recorderEntry, startedAt };
       };
+      let driving: Driving | null = null;
+      const driven = (): Driving => {
+        if (driving === null) throw new VerifyFailure('NOT_READY', 'a test asked to change settings outside the part of a run that drives the instance', 'report this as a verify bug');
+        return driving;
+      };
       const broker = await startBroker(run, workspace, scratch, {
         keys: () => deps.instances.keys(),
         fetch: deps.fetch ?? fetch,
         beforeLaunch: async () => {
           if (command.video) await (recorder ??= startRecorder());
         },
+        settings: { useSettings: (request, at) => driven().useSettings(request, at), restore: () => driven().restore() },
       });
 
       const evidenceMarks = command.video && !('all' in command.selection) ? (join(dir, EVIDENCE_MARKS_FILE) as EvidencePath) : null;
@@ -379,27 +386,39 @@ export async function runVerb(deps: Deps, command: Extract<Command, { verb: 'run
       const reportFile = join(outputDir, 'report.json') as EvidencePath;
       let invoked: Invoked | null = null;
       let identities: readonly Identity[] = [];
+      let settings: EvidenceRecord['settings'] = [];
       let failure: VerifyFailure | null = null;
       let endFailure: unknown = null;
       let videoStartedAt: number | null = null;
       try {
-        const driving = await deps.instances.drive();
+        const drove = await deps.instances.drive();
+        driving = drove;
         const inputs: Inputs = {
           target: targetOf(deps, outcome),
-          clerk: { publishableKey: driving.keys.pk, access: { kind: 'stand-in', url: broker.url, tokenFile: broker.tokenFile } },
+          clerk: { publishableKey: drove.keys.pk, access: { kind: 'stand-in', url: broker.url, tokenFile: broker.tokenFile } },
           run,
           evidenceMarks,
         };
+        let exitCode: number | null = null;
         try {
           driver.startClean(deps.progress);
-          const { exitCode } = await invokeE2E(planE2E(inputs, specs, command, workspace.packageDir, outputDir), log, workspace.packageDir, deps.progress, agent);
+          ({ exitCode } = await invokeE2E(planE2E(inputs, specs, command, workspace.packageDir, outputDir), log, workspace.packageDir, deps.progress, agent));
           identities = await newIdentities(deps, run, []);
-          invoked = await driving.stillStandard().then(
-            (standard) => ({ exitCode, standard, unread: null }),
-            (error: unknown) => ({ exitCode, standard: false, unread: (error as Error).message ?? String(error) }),
-          );
         } finally {
-          await driving.release();
+          const unrestored = await drove.restore().then(() => null, asFailure);
+          settings = drove.changes();
+          if (exitCode !== null) {
+            const ended = exitCode;
+            invoked =
+              unrestored !== null
+                ? { exitCode: ended, standard: false, unread: null, unrestored }
+                : await drove.stillStandard().then(
+                    (standard) => ({ exitCode: ended, standard, unread: null, unrestored }),
+                    (error: unknown) => ({ exitCode: ended, standard: false, unread: (error as Error).message ?? String(error), unrestored }),
+                  );
+          }
+          driving = null;
+          await drove.release();
         }
       } catch (error) {
         failure = asFailure(error);
@@ -428,7 +447,10 @@ export async function runVerb(deps: Deps, command: Extract<Command, { verb: 'run
           results = [];
           screenshots = [];
         }
-        if (failure === null && !invoked.standard) {
+        if (failure === null && invoked.unrestored !== null) {
+          const { unrestored } = invoked;
+          failure = new VerifyFailure(unrestored.code, `the settings a test changed could not be restored after the specs ended: ${unrestored.message}`, `${unrestored.fix}; the next {cli} run or up restores them before anything else`);
+        } else if (failure === null && !invoked.standard) {
           lostItsSettings = true;
           failure =
             invoked.unread === null
@@ -477,6 +499,7 @@ export async function runVerb(deps: Deps, command: Extract<Command, { verb: 'run
         appLog,
         e2eReport: reportFile,
         identities,
+        settings,
       });
       if (command.githubReport) {
         for (const line of await reportToGitHub({ record, failure, packageDir: workspace.packageDir })) deps.progress(`github    ${line}`);
