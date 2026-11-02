@@ -301,6 +301,13 @@ describe('assertPublishable and the settings a test changed', () => {
     assert.equal(assertPublishable({ ...base, settings: [change] }, []).run, run);
     assert.throws(() => assertPublishable({ ...base, settings: [change, { ...change, restored: false }] }, []), { code: 'EVIDENCE_UNSAFE', message: `run ${run} left settings a test changed unrestored: auth_multi_factor.required_for_sign_up` });
   });
+
+  it('refuses a run that an older CLI recorded with settings groups, instead of failing to read it', () => {
+    const { dir, run } = runDir();
+    const base = sealEvidence(dir, partialRecord(dir, run), []);
+    const group = { label: 'standard', askedBy: null, specs: [], application: 'app_x', changed: false, held: true, e2eReport: null };
+    assert.throws(() => assertPublishable({ ...base, settings: [group as never] }, []), { code: 'EVIDENCE_UNSAFE', message: `run ${run} was recorded by an older version of the CLI, which kept settings in another shape` });
+  });
 });
 
 describe('attach', () => {

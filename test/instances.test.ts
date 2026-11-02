@@ -947,6 +947,16 @@ describe('changing settings in a test', () => {
     assert.equal(await driving.stillStandard(), true);
   });
 
+  it('restores the environment of before the first change when a second change moves a leaf the first did not name', async () => {
+    const w = world();
+    const driving = await driven(w);
+    await driving.useSettings({ config: { [REQUIRED]: true, [AUTHENTICATOR]: false }, environment: { [SHOWS_REQUIRED]: true } }, null);
+    await driving.useSettings({ config: { [AUTHENTICATOR]: true } }, null);
+    await driving.restore();
+    assert.deepEqual([leaf(w, REQUIRED), leaf(w, AUTHENTICATOR), shownLeaf(w, SHOWS_AUTHENTICATOR)], [false, true, true]);
+    assert.deepEqual(driving.changes().map((change) => change.restored), [true, true]);
+  });
+
   it('puts a leaf a test changed twice back to its value before the first change', async () => {
     const w = world();
     const driving = await driven(w);

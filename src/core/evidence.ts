@@ -86,6 +86,7 @@ export function assertPublishable(record: EvidenceRecord, loggedUsers: readonly 
   assertShowable(record, loggedUsers);
   const failed = record.results.filter((r) => r.status === 'failed' || r.status === 'interrupted');
   if (failed.length > 0) refuse(`run ${record.run} has ${failed.length} failing spec(s)`, 'fix the failures and attach a passing run; a failing run can only be the --before of a passing one');
+  if (record.settings.some((change) => !Array.isArray(change.changed))) refuse(`run ${record.run} was recorded by an older version of the CLI, which kept settings in another shape`, 'run the specs again and attach the new run');
   const unrestored = [...new Set(record.settings.filter((change) => !change.restored).flatMap((change) => change.changed.map((leaf) => leaf.leaf)))];
   if (unrestored.length > 0) refuse(`run ${record.run} left settings a test changed unrestored: ${unrestored.join(', ')}`, 'attach a run that restored them; the next run restores them before its specs start');
   if (!record.results.some((r) => r.status === 'passed' || r.status === 'flaky')) refuse(`run ${record.run} passed no specs`, 'attach a run whose specs ran and passed');

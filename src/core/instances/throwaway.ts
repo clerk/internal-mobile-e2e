@@ -408,7 +408,9 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
     const lost = changed.find((c) => !sameLeaf(stored[c.leaf], c.to));
     if (lost !== undefined) throw new VerifyFailure('INSTANCE_MISCONFIGURED', `Clerk accepted ${lost.leaf}=${JSON.stringify(lost.to)} for ${id} on a dry run, and its answer to the change holds ${JSON.stringify(stored[lost.leaf] ?? null)}`, 'rerun once; if it repeats, report this as a verify bug');
     const shown = await waitShown(app, declared, before, (unmet) => new SettingsNotShown(`${where} changed ${assigned(changed)} on ${id}, and ${seconds(SHOWN_WITHIN_MS, 0)} later the environment does not show it: ${unmet}`, 'correct environment to the leaves and values the change shows, or leave it out and the CLI waits for any leaf to change'));
-    const wasShown = Object.fromEntries(shown.flatMap((leaf) => (Object.hasOwn(before, leaf) ? [[leaf, before[leaf]!]] : [])));
+    const after = shown.length === 0 ? before : await shownLeaves(app);
+    const movedLeaves = Object.keys({ ...before, ...after }).filter((leaf) => JSON.stringify(before[leaf]) !== JSON.stringify(after[leaf]));
+    const wasShown = Object.fromEntries([...new Set([...shown, ...movedLeaves])].flatMap((leaf) => (Object.hasOwn(before, leaf) ? [[leaf, before[leaf]!]] : [])));
     writeState(workspace, app.entry.name, { ...state, pending: underneath(pending, { config: {}, sections: {}, environment: wasShown }) });
     progress(`settings ${assigned(changed)}  on ${id} for ${where}; the environment showed ${shown.length === 0 ? 'no change' : shown.join(', ')} ${seconds(now() - started, 1)} later`);
     if (shown.length === 0 && declared === null) progress(`settings no leaf of the public environment changed within ${seconds(SHOWN_WITHIN_MS, 0)}; if the app reads this setting, pass environment so the wait can check it`);

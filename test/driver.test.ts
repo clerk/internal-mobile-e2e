@@ -588,7 +588,7 @@ describe('the driver logs a run keeps', () => {
     assert.equal(w.summary().at(-5), `At the end of the run daemon.json named pid ${GONE_TOO}, which was not running, and it carried no start time, which is what a daemon that fails to start leaves; agent-device refuses that registration and never removes it.`);
   });
 
-  it('gives a later group a clean start when the daemon fails to start during the run, and keeps what that daemon logged', () => {
+  it('gives the next clean start a fresh daemon when the daemon fails to start during the run, and keeps what that daemon logged', () => {
     const w = world();
     const driver = watchDriver(w.state, w.run, nothingRuns);
     driver.startClean(quiet);
