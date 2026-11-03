@@ -5,12 +5,13 @@ import net from 'node:net';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { TEST_PHONES, aboutToLaunch, isOrganizationNameOf, isTestDomainOf, isTestEmailOf, organizationName, testDomain, testEmail, testUsers } from '../specs/support/clerk.ts';
+import { TEST_PHONES, aboutToLaunch, callSiteOf, isOrganizationNameOf, restoreSettings, useSettings, isTestDomainOf, isTestEmailOf, organizationName, testDomain, testEmail, testUsers } from '../specs/support/clerk.ts';
 import { runIdParts } from '../specs/support/inputs.ts';
 import { runNames } from '../specs/support/names.ts';
 import { Secret, usedSecretValues } from '../specs/support/secret.ts';
-import { startBroker, type Broker } from '../src/core/broker.ts';
+import { startBroker, type Broker, type BrokerDeps } from '../src/core/broker.ts';
 import { REPLACE_AT_USERS } from '../src/core/clerk.ts';
+import { SettingsNotShown, SettingsRefused } from '../src/core/instances/settings.ts';
 import { VerifyFailure, type PublishableKey, type RunId } from '../src/core/types.ts';
 import { openWorkspace } from '../src/core/workspace.ts';
 
@@ -27,6 +28,8 @@ interface Forwarded {
 
 type Clerk = (request: Forwarded) => { readonly status: number; readonly body: unknown };
 
+const NO_SETTINGS: BrokerDeps['settings'] = { useSettings: async () => assert.fail('this test changes no settings'), restore: async () => undefined };
+
 let minted = 0;
 
 const emptyClerk: Clerk = (request) => {
@@ -35,7 +38,7 @@ const emptyClerk: Clerk = (request) => {
   return { status: 200, body: { object: 'user', id: 'user_created_1', email_addresses: [{ email_address: 'private@example.com' }] } };
 };
 
-async function standIn(clerk: Clerk = emptyClerk, beforeLaunch: () => Promise<void> = async () => undefined) {
+async function standIn(clerk: Clerk = emptyClerk, beforeLaunch: () => Promise<void> = async () => undefined, settings: BrokerDeps['settings'] = NO_SETTINGS) {
   const dir = mkdtempSync(join(tmpdir(), 'verify-stand-in-'));
   const workspace = openWorkspace({ packageDir: dir, worktree: dir, home: join(dir, 'home') });
   const { run, scratch } = workspace.newRun();
@@ -52,7 +55,7 @@ async function standIn(clerk: Clerk = emptyClerk, beforeLaunch: () => Promise<vo
     const answer = clerk(request);
     return new Response(JSON.stringify(answer.body), { status: answer.status });
   }) as typeof fetch;
-  const broker = await startBroker(run, workspace, scratch, { keys: () => keys, fetch: bapi, beforeLaunch });
+  const broker = await startBroker(run, workspace, scratch, { keys: () => keys, fetch: bapi, beforeLaunch, settings });
   const ask = async (method: string, path: string, body?: unknown, token: string = readFileSync(broker.tokenFile, 'utf8')) => {
     const response = await fetch(`${broker.url}${path}`, { method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: typeof body === 'string' ? body : JSON.stringify(body) }) });
     const text = await response.text();
@@ -521,5 +524,102 @@ describe("the CLI's stand-in for the Backend API", () => {
       assert.equal(answer.status, 502);
       assert.match(whyRefused(answer), /could not forward this request: fetch failed/);
     });
+  });
+});
+
+describe("the CLI's routes that change an instance's settings", () => {
+  const MFA = { config: { 'auth_multi_factor.required_for_sign_up': true }, environment: { 'user_settings.sign_up.mfa.required': true } } as const;
+  const AT = 'specs/features/session-tasks/setup-mfa.e2e.ts:8';
+
+  function recordingSettings(failWith: Error | null = null) {
+    const calls: unknown[] = [];
+    const settings: BrokerDeps['settings'] = {
+      async useSettings(request, at) {
+        calls.push(['use', request, at]);
+        if (failWith !== null) throw failWith;
+        return { changed: [{ leaf: 'auth_multi_factor.required_for_sign_up', from: false, to: true }], shown: ['user_settings.sign_up.mfa.required'] };
+      },
+      async restore() {
+        calls.push(['restore']);
+      },
+    };
+    return { calls, settings };
+  }
+
+  it('hands a change and a restore to the CLI only with the run token, answers what changed, and gives the test no key', async () => {
+    const { calls, settings } = recordingSettings();
+    const s = await standIn(emptyClerk, undefined, settings);
+    await stopping(s.broker, async () => {
+      assert.equal((await s.ask('POST', '/use_settings', { ...MFA, at: AT }, 'not-the-token')).status, 401);
+      assert.equal((await s.ask('POST', '/restore_settings', {}, SECRET_KEY)).status, 401);
+      assert.deepEqual(calls, [], 'a process without the run token changes nothing');
+      const answer = await s.ask('POST', '/use_settings', { ...MFA, at: AT });
+      assert.deepEqual([answer.status, answer.json], [200, { changed: [{ leaf: 'auth_multi_factor.required_for_sign_up', from: false, to: true }], shown: ['user_settings.sign_up.mfa.required'] }]);
+      await useSettings(s.access, MFA, null);
+      await restoreSettings(s.access);
+      await restoreSettings(s.access);
+      assert.deepEqual(calls, [['use', MFA, AT], ['use', MFA, null], ['restore'], ['restore']]);
+      assert.equal(JSON.stringify(answer.json).includes(SECRET_KEY), false);
+      assert.deepEqual(s.forwarded, [], 'nothing reaches the Backend API');
+    });
+  });
+
+  it('refuses a malformed request before the CLI sees it', async () => {
+    const { calls, settings } = recordingSettings();
+    const s = await standIn(emptyClerk, undefined, settings);
+    await stopping(s.broker, async () => {
+      const bodies: readonly [unknown, string][] = [
+        [{ config: { auth_multi_factor: { required_for_sign_up: true } } }, 'config leaf auth_multi_factor holds an object; write each leaf by its full dotted path, as in "auth_multi_factor.required_for_sign_up": true'],
+        [{ config: {} }, 'config names no leaf to change'],
+        [{ config: { 'auth_multi_factor.required_for_sign_up': true, auth_multi_factor: true } }, 'config names both auth_multi_factor and auth_multi_factor.required_for_sign_up, which is inside it'],
+        [{ config: { 'auth multi factor': true } }, 'config has "auth multi factor", which is not a dotted leaf name'],
+        [{ config: MFA.config, environment: {} }, 'environment names no leaf; leave it out, and the CLI waits for any leaf of the environment to change'],
+        [{ config: MFA.config, environment: { 'user_settings.sign_up': { mfa: true } } }, 'environment leaf user_settings.sign_up holds an object; write each leaf by its full dotted path, as in "auth_multi_factor.required_for_sign_up": true'],
+        [{ config: MFA.config, secret_key: 'x' }, 'it carries secret_key, and host.useSettings sends only config, environment, and at'],
+        ['[1]', 'its body is not a JSON object'],
+      ];
+      for (const [body, why] of bodies) {
+        const answer = await s.ask('POST', '/use_settings', body);
+        assert.deepEqual([answer.status, answer.json.errors?.[0]?.code, whyRefused(answer)], [403, 'verify_stand_in_refused', `the verify CLI's stand-in for the Backend API refused this request: ${why}`], why);
+      }
+      assert.equal(whyRefused(await s.ask('POST', '/restore_settings', { config: MFA.config })), "the verify CLI's stand-in for the Backend API refused this request: it carries config, and a restore carries nothing");
+      assert.deepEqual(calls, []);
+    });
+  });
+
+  it('fails the call in the test with what the CLI says and how to fix it', async () => {
+    for (const [failure, status, code] of [
+      [new SettingsRefused('the call asks for x, and Clerk refused it', 'correct x'), 422, 'verify_settings_refused'],
+      [new SettingsNotShown('the environment does not show it', 'correct environment'), 503, 'verify_settings_not_shown'],
+    ] as const) {
+      const s = await standIn(emptyClerk, undefined, recordingSettings(failure).settings);
+      await stopping(s.broker, async () => {
+        const answer = await s.ask('POST', '/use_settings', MFA);
+        assert.deepEqual([answer.status, answer.json.errors?.[0]?.code], [status, code]);
+        await assert.rejects(useSettings(s.access, MFA, null), { message: `${failure.message} (fix: ${failure.fix})` });
+      });
+    }
+  });
+
+  it('refuses to change settings in a run by hand, which has a secret key and no CLI, and asks nothing to restore there', async () => {
+    const asked: string[] = [];
+    const recording = (async (url: string | URL) => (asked.push(String(url)), new Response('{}'))) as typeof fetch;
+    const byHand = { kind: 'secret-key', key: new Secret('clerk-secret-key', SECRET_KEY) } as const;
+    await assert.rejects(useSettings(byHand, MFA, null, recording), /host\.useSettings needs the verify CLI, which holds the Platform API key/);
+    await restoreSettings(byHand, recording);
+    assert.deepEqual(asked, []);
+  });
+
+  it('names the spec line that called it, from the stack of the call', () => {
+    const stack = [
+      'Error',
+      '    at Object.useSettings (file:///Users/me/clerk-ios/node_modules/@clerk/internal-mobile-e2e/dist/specs/fixtures.js:140:37)',
+      '    at file:///Users/me/clerk-ios/e2e/specs/features/session-tasks/setup-mfa.e2e.ts:8:16',
+      '    at file:///Users/me/clerk-ios/e2e/specs/features/session-tasks/other.e2e.ts:20:1',
+    ].join('\n');
+    assert.equal(callSiteOf(stack), 'specs/features/session-tasks/setup-mfa.e2e.ts:8');
+    assert.equal(callSiteOf('    at Context.<anonymous> (/work/specs/explored/probe.e2e.ts:3:9)'), 'specs/explored/probe.e2e.ts:3');
+    assert.equal(callSiteOf('Error\n    at somewhere (/work/lib/x.js:1:1)'), null);
+    assert.equal(callSiteOf(undefined), null);
   });
 });

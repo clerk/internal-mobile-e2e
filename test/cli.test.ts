@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import { createOutput, exitCodeFor, parseArgv } from '../src/core/cli.ts';
 import { Secret } from '../specs/support/secret.ts';
 import { supportsNode } from '../src/core/launch.mjs';
-import { VerifyFailure, type Command, type DoctorReport, type DownResult, type EvidencePath, type EvidenceRecord, type RunResult, type SpecResult } from '../src/core/types.ts';
+import { VerifyFailure, type Command, type DoctorReport, type DownResult, type EvidencePath, type EvidenceRecord, type RunResult, type SettingsResult, type SpecResult } from '../src/core/types.ts';
 
 function usageError(argv: readonly string[]): VerifyFailure {
   try {
@@ -254,6 +254,40 @@ describe('down output', () => {
 
   it('says no daemon ran when the ledger had none', () => {
     assert.match(render([]), /stopped   nothing; no agent-device daemon running/);
+  });
+});
+
+describe('settings output', () => {
+  const RESULT: SettingsResult = {
+    verb: 'settings',
+    application: { id: 'app_2xY', name: 'verify-throwaway-until-20261102t1800z-1a2b3c4d' },
+    pending: [],
+    config: { 'auth_email.sign_in_strategies': ['email_code'], 'auth_multi_factor.required_for_sign_up': false, 'compliance.legal_consent.privacy_policy_url': null },
+  };
+  const text = (result: SettingsResult, json = false) => {
+    let out = '';
+    createOutput(json, '/tmp', 'bin/control-x', { write: (t: string) => (out += t) }, { write: () => true }).result(result);
+    return out;
+  };
+
+  it('parses leaf prefixes and refuses anything that is not a dotted name', () => {
+    assert.deepEqual(parseArgv(['settings']).command, { verb: 'settings', prefixes: [] });
+    assert.deepEqual(parseArgv(['settings', 'auth_multi_factor', 'auth_email.sign_in_strategies', '--json']), { command: { verb: 'settings', prefixes: ['auth_multi_factor', 'auth_email.sign_in_strategies'] }, json: true });
+    for (const bad of ['auth_multi_factor.', 'a b', '.x']) assert.throws(() => parseArgv(['settings', bad]), { code: 'USAGE' }, bad);
+    assert.throws(() => parseArgv(['settings', '--platform', 'ios']), { code: 'USAGE' });
+  });
+
+  it('prints one line per leaf that pastes into config, under a line that names the application and what is pending', () => {
+    assert.deepEqual(text(RESULT).trimEnd().split('\n'), [
+      'settings  app_2xY (verify-throwaway-until-20261102t1800z-1a2b3c4d)  no change a test made is pending',
+      '"auth_email.sign_in_strategies": ["email_code"],',
+      '"auth_multi_factor.required_for_sign_up": false,',
+      '"compliance.legal_consent.privacy_policy_url": null,',
+    ]);
+    assert.match(text({ ...RESULT, pending: ['a.b', 'c.d'] }), /  2 leaves a test changed are not restored yet; the next run or up restores them\n/);
+    assert.match(text({ ...RESULT, pending: null }), /  what it is on is not recorded; the next run or up replaces it\n/);
+    assert.deepEqual(JSON.parse(text(RESULT, true)), { ok: true, ...RESULT });
+    assert.equal(exitCodeFor(RESULT), 0);
   });
 });
 

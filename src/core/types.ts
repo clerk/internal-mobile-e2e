@@ -32,11 +32,6 @@ export type ScratchPath = Brand<string, 'ScratchPath'>;
 
 export type Json = null | boolean | number | string | readonly Json[] | { readonly [key: string]: Json };
 
-export interface InstanceSettings {
-  readonly config: { readonly [key: string]: Json };
-  readonly environment: { readonly [leaf: string]: Json };
-}
-
 export interface InstanceView {
   readonly id: string;
   readonly name: string;
@@ -71,7 +66,8 @@ export type Command =
     }
   | { readonly verb: 'screen'; readonly platform?: Platform; readonly png: boolean }
   | { readonly verb: 'attach'; readonly run: RunId; readonly pr: number; readonly media: MediaChoice; readonly before: RunId | null }
-  | { readonly verb: 'down'; readonly platform?: Platform; readonly stale: boolean; readonly dryRun: boolean };
+  | { readonly verb: 'down'; readonly platform?: Platform; readonly stale: boolean; readonly dryRun: boolean }
+  | { readonly verb: 'settings'; readonly prefixes: readonly string[] };
 
 export type Verb = Command['verb'];
 export type RunCommand = Extract<Command, { verb: 'run' }>;
@@ -238,7 +234,14 @@ export interface DeletionTarget {
   readonly name: string;
 }
 
-export type VerbResult = DoctorReport | UpResult | RunResult | ScreenResult | AttachResult | DownResult;
+export interface SettingsResult {
+  readonly verb: 'settings';
+  readonly application: { readonly id: string; readonly name: string };
+  readonly pending: readonly string[] | null;
+  readonly config: { readonly [leaf: string]: Json };
+}
+
+export type VerbResult = DoctorReport | UpResult | RunResult | ScreenResult | AttachResult | DownResult | SettingsResult;
 
 export type SpecKind = 'committed' | 'explored';
 export interface SpecRef {
@@ -352,6 +355,13 @@ export interface Viewport {
   readonly height: number;
 }
 
+export interface SettingsChangeRecord {
+  readonly at: string | null;
+  readonly changed: readonly { readonly leaf: string; readonly from: Json; readonly to: Json }[];
+  readonly shown: readonly string[];
+  readonly restored: boolean;
+}
+
 export interface EvidenceRecord {
   readonly run: RunId;
   readonly startedAt: string;
@@ -372,15 +382,7 @@ export interface EvidenceRecord {
   readonly appLog: EvidencePath | null;
   readonly e2eReport: EvidencePath;
   readonly identities: readonly { readonly email: TestEmail; readonly userId: string | null }[];
-  readonly settings: readonly {
-    readonly label: string;
-    readonly askedBy: string | null;
-    readonly specs: readonly string[];
-    readonly application: string | null;
-    readonly changed: boolean;
-    readonly held: boolean;
-    readonly e2eReport: EvidencePath | null;
-  }[];
+  readonly settings: readonly SettingsChangeRecord[];
   readonly tainted: readonly EvidencePath[];
   readonly sealed: true;
 }

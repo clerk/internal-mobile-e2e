@@ -96,6 +96,17 @@ export interface LaunchOptions {
   readonly landsOn?: Locator;
 }
 
+export type SettingScalar = string | number | boolean | null;
+export type SettingValue = SettingScalar | readonly SettingScalar[];
+export type SettingLeaves = { readonly [dottedLeaf: string]: SettingValue };
+
+export interface SettingsRequest {
+  /** Platform API instance config leaves to change, each by its full dotted name, as `{cli} settings` prints them. */
+  readonly config: SettingLeaves;
+  /** Leaves of the public `/v1/environment` that show the change. Left out, the CLI waits for any leaf to change. */
+  readonly environment?: SettingLeaves;
+}
+
 export interface HostFixture {
   readonly runId: RunId;
   readonly app: AppLocators;
@@ -113,4 +124,6 @@ export interface HostFixture {
   back(): Promise<void>;
   fill(target: Locator, text: string | SecretLike): Promise<void>;
   evidence<T>(label: string, body: () => Promise<T>): Promise<T>;
+  /** Changes instance settings for the rest of the test. When the test ends, pass or fail, the CLI puts back the values it read before the change. */
+  useSettings(request: SettingsRequest): Promise<void>;
 }

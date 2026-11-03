@@ -36,7 +36,12 @@ const SHOWN: readonly { readonly config: string; readonly leaf: string; readonly
   { config: 'auth_multi_factor.required_for_sign_up', leaf: 'user_settings.sign_up.mfa.required' },
   { config: 'session_settings.multi_session_enabled', leaf: 'auth_config.single_session_mode', as: (value) => value !== true },
   { config: 'auth_password.min_length', leaf: 'user_settings.password_settings.min_length' },
+  { config: 'auth_multi_factor.authenticator_app.enabled', leaf: 'user_settings.attributes.authenticator_app.enabled' },
+  { config: 'auth_biometric.used_for_sign_in', leaf: 'auth_config.native_settings.trusted_device_sign_in_enabled' },
+  { config: 'restrictions.ignore_dots_for_gmail_addresses', leaf: 'user_settings.restrictions.ignore_dots_for_gmail_addresses' },
 ];
+
+export const OUTSIDE_BASE = { 'auth_multi_factor.phone_code.enabled': true, 'restrictions.ignore_dots_for_gmail_addresses': false } as const;
 
 export interface FakeRefusal {
   readonly path: string;
@@ -102,9 +107,19 @@ export function fakeClerk(options: FakeClerkOptions = {}) {
   const error = (status: number, code: string): Response => json(status, { errors: [{ code, message: code }] });
   const live = () => applications.filter((application) => !application.deleted);
 
-  const freshEnvironment = (): Record<string, Json> => ({ 'auth_config.reverification': true, ...standardFile().environment, 'auth_config.single_session_mode': true, 'user_settings.password_settings.min_length': 15 });
+  const freshEnvironment = (): Record<string, Json> => ({
+    'auth_config.reverification': true,
+    ...standardFile().environment,
+    'auth_config.single_session_mode': true,
+    'user_settings.password_settings.min_length': 15,
+    'auth_config.native_settings.trusted_device_sign_in_enabled': false,
+    'user_settings.restrictions.ignore_dots_for_gmail_addresses': false,
+  });
 
-  const fresh = (): Pick<FakeApplication, 'config' | 'environment' | 'users' | 'created' | 'deleted'> => ({ config: {}, environment: freshEnvironment(), users: 0, created: [], deleted: false });
+  const freshConfig = (): Record<string, Json> =>
+    [...Object.entries(OUTSIDE_BASE), ['session_settings.multi_session_enabled', false] as const, ['auth_password.min_length', 15] as const].reduce((config, [path, value]) => merged(config, nested(path, value)), structuredClone(standardFile().config) as Record<string, Json>);
+
+  const fresh = (): Pick<FakeApplication, 'config' | 'environment' | 'users' | 'created' | 'deleted'> => ({ config: freshConfig(), environment: freshEnvironment(), users: 0, created: [], deleted: false });
 
   function platform(method: string, path: string, authorization: string | null, body: unknown): Response {
     if (rateLimited.left > 0) {
@@ -124,6 +139,14 @@ export function fakeClerk(options: FakeClerkOptions = {}) {
       if (read[2] !== undefined && state.scopes?.includes(SECRET_KEY_SCOPE) !== true) return json(403, { errors: [{ code: 'authorization_missing_scopes', message: 'Missing scopes', meta: { scopes: [SECRET_KEY_SCOPE] } }] });
       const application = live().find((candidate) => candidate.id === read[1]);
       return application === undefined ? error(404, 'resource_not_found') : json(200, listed(application, read[2] !== undefined));
+    }
+    const reading = /^\/applications\/([^/]+)\/instances\/([^/?]+)\/config(\?.*)?$/.exec(path);
+    if (method === 'GET' && reading !== null) {
+      const application = live().find((candidate) => candidate.id === reading[1]);
+      if (application === undefined) return error(404, 'resource_not_found');
+      const keys = new URLSearchParams(reading[3] ?? '').getAll('keys');
+      const picked = keys.length === 0 ? application.config : Object.fromEntries(keys.flatMap((key) => (key in application.config ? [[key, application.config[key]!]] : [])));
+      return json(200, { config_version: '2026-10-05', ...structuredClone(picked) });
     }
     if (method === 'GET' && path.startsWith('/applications')) {
       const all = live().map((application) => listed(application, false));
@@ -163,6 +186,8 @@ export function fakeClerk(options: FakeClerkOptions = {}) {
         return json(refusal.status, { errors: named.map((param) => ({ code: refusal.code, message: refusal.message, long_message: refusal.message, ...(param === undefined ? {} : { meta: { param_name: param } }) })) });
       }
       let after = merged(application.config, sent);
+      const turnsOrganizationsOn = leaves['organization_settings.enabled'] === true && configLeaves(application.config)['organization_settings.enabled'] === false;
+      if (turnsOrganizationsOn && !('organization_settings.force_organization_selection' in leaves)) after = merged(after, nested('organization_settings.force_organization_selection', true));
       for (const [path, value] of Object.entries(state.storesInstead)) if (path in leaves) after = merged(after, nested(path, value));
       const named = (from: JsonObject): JsonObject => Object.fromEntries(Object.keys(sent).flatMap((key) => (key in from ? [[key, from[key]!]] : [])));
       const reordered = (value: Json): Json => (Array.isArray(value) ? [...value].sort().reverse() : typeof value === 'object' && value !== null ? Object.fromEntries(Object.entries(value).map(([key, child]) => [key, reordered(child)])) : value);

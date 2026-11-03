@@ -26,7 +26,7 @@ import {
   type VerbResult,
 } from './types.ts';
 
-const VERBS: readonly Verb[] = ['doctor', 'up', 'run', 'screen', 'attach', 'down'];
+const VERBS: readonly Verb[] = ['doctor', 'up', 'run', 'screen', 'attach', 'down', 'settings'];
 
 const USAGE_FIX = [
   '{cli} doctor [--platform p] [--backend auto|local|remote] [--live [--runner <label>]]',
@@ -35,6 +35,7 @@ const USAGE_FIX = [
   '{cli} screen [--platform p] [--png]',
   '{cli} attach <run-id> --pr <n> --screenshot <label>... | --video [--before <run-id>]',
   '{cli} down [--platform p] [--stale] [--dry-run]',
+  '{cli} settings [<leaf prefix>...]',
   'every verb takes --json',
 ].join('; ');
 
@@ -56,7 +57,10 @@ const FLAGS: Readonly<Record<Verb, FlagSpec>> = {
   screen: { platform: 'value', png: 'bool' },
   attach: { pr: 'value', screenshot: 'list', video: 'bool', before: 'value' },
   down: { platform: 'value', stale: 'bool', 'dry-run': 'bool' },
+  settings: {},
 };
+
+const LEAF_PREFIX = /^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$/;
 
 function platformFlag(value: string | undefined): Platform | undefined {
   if (value === undefined) return undefined;
@@ -181,6 +185,12 @@ export function parseArgv(argv: readonly string[]): Invocation {
       noPositionals();
       command = { verb, ...(platform === undefined ? {} : { platform }), stale: bools.has('stale'), dryRun: bools.has('dry-run') };
       break;
+    case 'settings': {
+      const bad = positionals.find((prefix) => !LEAF_PREFIX.test(prefix));
+      if (bad !== undefined) throw usage(`${bad} is not a dotted config leaf or prefix, such as auth_multi_factor or auth_multi_factor.required_for_sign_up`);
+      command = { verb, prefixes: positionals };
+      break;
+    }
     default: {
       const exhaustive: never = verb;
       throw usage(`unknown verb ${String(exhaustive)}`);
@@ -275,6 +285,10 @@ function render(value: VerbResult, packageDir: string): string[] {
             ]),
         `kept      ${count(value.keptRuns.length, 'run')} in .verify/runs/`,
       ];
+    case 'settings': {
+      const pending = value.pending === null ? 'what it is on is not recorded; the next run or up replaces it' : value.pending.length === 0 ? 'no change a test made is pending' : `${value.pending.length === 1 ? '1 leaf a test changed is' : `${value.pending.length} leaves a test changed are`} not restored yet; the next run or up restores them`;
+      return [`settings  ${value.application.id} (${value.application.name})  ${pending}`, ...Object.entries(value.config).map(([leaf, setting]) => `${JSON.stringify(leaf)}: ${JSON.stringify(setting)},`)];
+    }
     default: {
       const exhaustive: never = value;
       return [JSON.stringify(exhaustive)];
@@ -363,6 +377,9 @@ export async function main(argv: readonly string[], host: HostAdapter, options: 
         break;
       case 'down':
         result = await verbs.down(deps, command);
+        break;
+      case 'settings':
+        result = await verbs.settings(deps, command);
         break;
       default: {
         const exhaustive: never = command;

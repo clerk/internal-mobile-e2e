@@ -12,44 +12,31 @@ import type { ExecResult, Runner } from '../src/core/exec.ts';
 import { compareEnvironment, flattenEnvironment } from '../src/core/instances/settings.ts';
 import { createInstances } from '../src/core/instances/instances.ts';
 import { createPlatform, deadlineOf, describeCredential, throwawayApplication, throwawayName } from '../src/core/instances/platform.ts';
-import { STANDARD, STANDARD_ENVIRONMENT_KEY, STANDARD_FILE, SettingsRefused, planGroups, standardFile, type SettingsGroup } from '../src/core/instances/settings.ts';
+import { BASE_KEY, STANDARD_FILE, SettingsNotShown, SettingsRefused, configLeaves, standardFile } from '../src/core/instances/settings.ts';
 import { openApplications } from '../src/core/instances/throwaway.ts';
 import { withoutClerkKeys } from '../src/core/keys.ts';
 import { finishOrphanLedgers } from '../src/core/ledgers.ts';
 import { createOutput, takePlatformKey } from '../src/core/cli.ts';
 import { Secret, redact } from '../specs/support/secret.ts';
-import { down, type Deps } from '../src/core/verbs.ts';
+import { down, settings, type Deps } from '../src/core/verbs.ts';
 import { newEntryId, openWorkspace, takeSlotLock } from '../src/core/workspace.ts';
-import { RETRYABLE, VerifyFailure, type DeviceBackend, type HostAdapter, type InstanceSettings, type InstanceView, type LocalLease, type PublishableKey, type ScratchPath } from '../src/core/types.ts';
-import { PLATFORM_KEY, PLATFORM_SCOPES, SECRET_KEY_SCOPE, WORKSPACE, fakeClerk, type FakeClerkOptions } from '../testing/fake-clerk.ts';
+import { RETRYABLE, VerifyFailure, type DeviceBackend, type HostAdapter, type InstanceView, type Json, type LocalLease, type PublishableKey, type ScratchPath } from '../src/core/types.ts';
+import { OUTSIDE_BASE, PLATFORM_KEY, PLATFORM_SCOPES, SECRET_KEY_SCOPE, WORKSPACE, fakeClerk, type FakeClerkOptions } from '../testing/fake-clerk.ts';
 
 const T0 = Date.parse('2026-10-05T12:00:00Z');
 const HOUR = 3_600_000;
 const host = { repo: 'clerk-ios', platforms: ['ios'] } as unknown as HostAdapter;
 
-const MFA: InstanceSettings = { config: { auth_multi_factor: { required_for_sign_up: true } }, environment: { 'user_settings.sign_up.mfa.required': true } };
-const FORCED_ORG: InstanceSettings = { config: { organization_settings: { force_organization_selection: true } }, environment: { 'organization_settings.force_organization_selection': true } };
-const MFA_LABEL = 'auth_multi_factor.required_for_sign_up=true';
-const ORG_LABEL = 'organization_settings.force_organization_selection=true';
-const MFA_BODY = { ...standardFile().config, auth_multi_factor: { ...(standardFile().config.auth_multi_factor as object), required_for_sign_up: true } };
-const MFA_SPEC = 'specs/features/session-tasks/setup-mfa.e2e.ts';
-const MFA_FILE = 'specs/features/session-tasks/setup-mfa.settings.json';
-const ORG_SPEC = 'specs/features/session-tasks/choose-organization.e2e.ts';
-const STANDARD_SPEC = 'specs/features/auth-start/auth-start.e2e.ts';
-
-const groupOf = (declared: InstanceSettings | null, path: string): SettingsGroup =>
-  planGroups([{ spec: { kind: 'committed', path, feature: null }, source: "test('x', () => {});\n", declaration: declared === null ? null : JSON.stringify(declared) }], null)[0]!;
+const MFA = { config: { auth_multi_factor: { required_for_sign_up: true } } } as const;
 const keyRefused = (error: VerifyFailure): boolean =>
   error.code === 'NOT_READY' &&
   error.message === "api.clerk.com answered 401 to the instance's own secret key; the likely cause is a cloud environment whose API credential for api.clerk.com has no path prefix, so it replaces the key on every request to that host" &&
   error.fix === 'set Path prefixes on that credential to /v1/platform/, so it is attached to Platform API calls only, then rerun';
-const standardGroup = groupOf(null, STANDARD_SPEC);
-const mfaGroup = groupOf(MFA, MFA_SPEC);
-const orgGroup = groupOf(FORCED_ORG, ORG_SPEC);
+
+const NO_SETTINGS = { useSettings: async () => assert.fail('no test changes settings here'), restore: async () => undefined };
 
 const idOf = (view: InstanceView | undefined): string | null => view?.id ?? null;
 const quiet = () => undefined;
-const NOTHING_NEW = { willChange: false } as const;
 
 const noOp: Runner = async () => ({ code: 127, stdout: '', stderr: 'spawn op ENOENT' });
 const REFERENCE = 'op://fake-vault/fake-item/credential';
@@ -92,7 +79,16 @@ const platformCalls = (w: World) => w.clerk.platformRequests().map((request) => 
 const writes = (w: World) => w.clerk.platformRequests().filter((request) => request.method !== 'GET').map((request) => `${request.method} ${request.url.replace('api.clerk.com/v1/platform', '').replace(/\/instances\/ins_\w+/, '')}`);
 const patches = (w: World) => w.clerk.platformRequests().filter((request) => request.method === 'PATCH');
 const instancesDir = (w: World) => join(w.workspace.root, 'instances');
-const stateOf = (w: World, name: string) => JSON.parse(readFileSync(join(instancesDir(w), `${name}.state.json`), 'utf8')) as { environmentKey?: string; settings?: { key: string; label: string; askedBy: string | null }; drivers: { pid: number }[] };
+const stateOf = (w: World, name: string) => JSON.parse(readFileSync(join(instancesDir(w), `${name}.state.json`), 'utf8')) as { baseKey?: string; pending?: { config: Record<string, Json>; sections: Record<string, Json>; environment: Record<string, Json> } | null; drivers: { pid: number }[] };
+const recorded = (w: World): string | null => {
+  const [entry] = openApplications(w.workspace);
+  if (entry === undefined || !existsSync(join(instancesDir(w), `${entry.name}.state.json`))) return null;
+  try {
+    return stateOf(w, entry.name).baseKey ?? null;
+  } catch {
+    return null;
+  }
+};
 
 const sentSince = (w: World, before: number): string[] => w.clerk.platformRequests().slice(before).map((request) => `${request.method} ${request.url.replace('api.clerk.com/v1/platform', '')}`);
 const secretKeyReads = (w: World): ReturnType<World['clerk']['platformRequests']> => w.clerk.platformRequests().filter((request) => request.url.endsWith('?include_secret_keys=true'));
@@ -111,9 +107,10 @@ function plantedApplication(w: World, random: string, secretKey?: string) {
   return application;
 }
 
-function heldWithoutState(w: World, random: string, secretKey?: string) {
+function heldOnStandard(w: World, random: string, secretKey?: string) {
   const application = plantedApplication(w, random, secretKey);
   writeFileSync(join(instancesDir(w), `${application.name}.json`), `${JSON.stringify({ application: application.id, instanceId: application.instanceId, publishableKey: application.pk })}\n`, { mode: 0o600 });
+  writeFileSync(join(instancesDir(w), `${application.name}.state.json`), `${JSON.stringify({ baseKey: BASE_KEY, pending: null, drivers: [] })}\n`, { mode: 0o600 });
   return application;
 }
 
@@ -206,7 +203,7 @@ describe('platform credential', () => {
 
   it('prints no line that holds the reference when a command reads the key from 1Password', async () => {
     const w = world({ env: referenced, runner: op({ code: 0, stdout: PLATFORM_KEY, stderr: '' }) });
-    const up = await w.instances.ensure(NOTHING_NEW, w.say);
+    const up = await w.instances.ensure(w.say);
     assert.ok(w.lines.includes(`instances 1Password reaches the verification workspace ${WORKSPACE}`));
     assert.ok(w.lines.length > 1);
     assert.deepEqual([...w.lines, JSON.stringify(up)].filter(namesTheItem), []);
@@ -368,26 +365,36 @@ describe('what Clerk says to a config change', () => {
     return { fake, workspace, created };
   };
 
-  it('answers with the whole object of each key the body named, and a dry run changes nothing', async () => {
+  it('answers with the whole object of each key the body named, before and after, and a dry run changes nothing', async () => {
     const { fake, workspace, created } = await opened();
+    const multiFactor = fake.live()[0]!.config.auth_multi_factor as Record<string, Json>;
     const dry = await workspace.configure(created, MFA.config, { dryRun: true });
-    assert.deepEqual(dry.after, { auth_multi_factor: { required_for_sign_up: true } });
+    assert.deepEqual(dry.before, { auth_multi_factor: multiFactor });
+    assert.deepEqual(dry.after, { auth_multi_factor: { ...multiFactor, required_for_sign_up: true } }, 'a PATCH merges into what the instance has');
     assert.equal(fake.live()[0]!.environment['user_settings.sign_up.mfa.required'], false);
-    await workspace.configure(created, standardFile().config);
     const real = await workspace.configure(created, MFA.config);
-    assert.deepEqual(real.after, { auth_multi_factor: { ...(standardFile().config.auth_multi_factor as object), required_for_sign_up: true } }, 'a PATCH merges into what the instance has');
+    assert.deepEqual(real.after, dry.after);
     assert.equal(fake.live()[0]!.environment['user_settings.sign_up.mfa.required'], true);
+  });
+
+  it('reads the config of the keys it names, or all of it, without the version', async () => {
+    const { fake, workspace, created } = await opened();
+    const config = fake.live()[0]!.config;
+    assert.deepEqual(await workspace.readConfig(created, ['auth_multi_factor', 'restrictions']), { auth_multi_factor: config.auth_multi_factor, restrictions: config.restrictions });
+    assert.deepEqual(await workspace.readConfig(created, []), config);
+    assert.deepEqual(fake.platformRequests().filter((request) => request.method === 'GET' && request.url.includes('/config')).map((request) => request.url.split('/config')[1]), ['?keys=auth_multi_factor&keys=restrictions', '']);
   });
 
   it('turns a refused body into a refusal that names the key when Clerk names it', async () => {
     const { fake, workspace, created } = await opened();
+    const fresh = structuredClone(fake.live()[0]!.config);
     fake.state.refusals.push({ path: 'auth_email.no_such_toggle', status: 400, code: 'unknown_config_key', param: 'auth_email.no_such_toggle', message: 'is not a config key' });
     await assert.rejects(workspace.configure(created, { auth_email: { no_such_toggle: true } }), (error: SettingsRefused) => error instanceof SettingsRefused && error.code === 'INSTANCE_MISCONFIGURED' && error.param === 'auth_email.no_such_toggle' && error.said === 'auth_email.no_such_toggle (400 unknown_config_key): is not a config key');
     fake.state.refusals.push({ path: 'auth_attack_protection.pii_protection_enabled', value: false, status: 409, code: 'user_settings_invalid', message: 'the settings are not valid together' });
     await assert.rejects(workspace.configure(created, { auth_attack_protection: { pii_protection_enabled: false } }), (error: SettingsRefused) => error instanceof SettingsRefused && error.param === null && error.said === '409 user_settings_invalid: the settings are not valid together');
     fake.state.refusals.push({ path: 'compliance.legal_consent.enabled', value: true, status: 422, code: 'form_param_missing', param: ['terms_of_service_url', 'privacy_policy_url'], message: 'is required' });
     await assert.rejects(workspace.configure(created, { compliance: { legal_consent: { enabled: true } } }), (error: SettingsRefused) => error instanceof SettingsRefused && error.param === 'terms_of_service_url' && error.said === 'terms_of_service_url (422 form_param_missing): is required', 'any 4xx that is about the body is a refusal, and a code two errors share is said once');
-    assert.deepEqual(fake.live()[0]!.config, {}, 'a refused body applied nothing');
+    assert.deepEqual(fake.live()[0]!.config, fresh, 'a refused body applied nothing');
   });
 
   it('reads a 4xx that names a parameter as a refusal of the body whatever its status, except a rate limit', async () => {
@@ -417,7 +424,7 @@ describe('what Clerk says to a config change', () => {
 describe('one throwaway application', () => {
   it('is created by up, put on the whole standard config with one PATCH, and recorded', async () => {
     const w = world();
-    const up = await w.instances.ensure(NOTHING_NEW, w.say);
+    const up = await w.instances.ensure(w.say);
     const application = w.clerk.live()[0]!;
     assert.deepEqual(up, [{ id: application.id, name: application.name, created: true, settings: 'standard' }]);
     assert.deepEqual(platformCalls(w), ['GET /me', 'GET /applications', 'POST /applications', 'PATCH /applications/{app}/instances/{ins}/config']);
@@ -425,37 +432,33 @@ describe('one throwaway application', () => {
     assert.equal(deadlineOf(application.name)?.getTime(), T0 + 6 * HOUR);
     assert.ok(w.lines.includes(`instance creating ${application.name} in ${WORKSPACE}`));
     assert.ok(w.lines.includes(`instance ${application.id}  up in 0.0s on standard, ${LEAVES} settings match ${STANDARD_FILE}`), w.lines.join('\n'));
-    assert.deepEqual(stateOf(w, application.name), { environmentKey: STANDARD_ENVIRONMENT_KEY, settings: STANDARD, drivers: [] });
-    assert.equal(w.instances.recordedKey(), STANDARD.key);
+    assert.deepEqual(stateOf(w, application.name), { baseKey: BASE_KEY, pending: null, drivers: [] });
   });
 
   it('asks the Platform API only for the secret key when it is already up, and says what it is on', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     const before = w.clerk.platformRequests().length;
-    const again = await w.open().ensure(NOTHING_NEW, w.say);
+    const again = await w.open().ensure(w.say);
     assert.deepEqual(sentSince(w, before), ['GET /me', readOf(w.clerk.live()[0]!)], 'the credential is checked, the key is read, and the applications are not listed');
     assert.deepEqual(again.map((view) => [view.created, view.settings]), [[false, 'standard']]);
     assert.ok(w.lines.includes('instances this worktree already holds throwaway instances'));
   });
 
-  it('opens the credential when the run will change settings, though nothing needs creating', async () => {
+  it('needs the credential for an application it already holds, because the secret key of it is on no disk', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
-    const before = w.clerk.platformRequests().length;
-    await w.open().ensure({ willChange: true }, quiet);
-    assert.deepEqual(sentSince(w, before), ['GET /me', readOf(w.clerk.live()[0]!), 'GET /applications'], 'a missing credential or a 1Password prompt would have come here, before any device is leased');
+    await w.instances.ensure(quiet);
     const noCredential = (): ReturnType<typeof createInstances> => createInstances({ workspace: w.workspace, env: {}, runner: noOp, progress: quiet, fetch: w.clerk.fetch });
     const sent = w.clerk.requests.length;
-    await assert.rejects(noCredential().access(), (error: VerifyFailure) => error.code === 'KEYS_MISSING', 'the secret key is on no disk, so a held application needs the credential too, and up and run ask for it before they lease a device');
-    for (const options of [{ willChange: true }, NOTHING_NEW]) await assert.rejects(noCredential().ensure(options, quiet), (error: VerifyFailure) => error.code === 'KEYS_MISSING');
-    assert.deepEqual(w.clerk.requests.slice(sent).map((request) => `${request.authorization === null ? 'no key' : 'a key'} ${request.method} ${request.url}`), Array.from({ length: 3 }, () => 'no key GET api.clerk.com/v1/platform/me'), 'nothing but the question of whether a key is attached outside this machine');
+    await assert.rejects(noCredential().access(), (error: VerifyFailure) => error.code === 'KEYS_MISSING', 'up and run ask for it before they lease a device');
+    await assert.rejects(noCredential().ensure(quiet), (error: VerifyFailure) => error.code === 'KEYS_MISSING');
+    assert.deepEqual(w.clerk.requests.slice(sent).map((request) => `${request.authorization === null ? 'no key' : 'a key'} ${request.method} ${request.url}`), Array.from({ length: 2 }, () => 'no key GET api.clerk.com/v1/platform/me'), 'nothing but the question of whether a key is attached outside this machine');
   });
 
   it('writes the name to the ledger before the create call, so a lost answer is still deleted', async () => {
     const w = world();
     w.clerk.state.loseCreateAnswer = true;
-    await assert.rejects(w.instances.ensure(NOTHING_NEW, quiet), /answered 500/);
+    await assert.rejects(w.instances.ensure(quiet), /answered 500/);
     const [entry] = openApplications(w.workspace);
     assert.equal(w.clerk.live()[0]?.name, entry?.name, 'Clerk has the application and the ledger has its name');
     assert.equal('instance' in (entry ?? {}), false, 'a new entry names no instance');
@@ -469,66 +472,51 @@ describe('one throwaway application', () => {
   it('replaces an application whose keys were lost instead of leaking it', async () => {
     const w = world();
     w.clerk.state.loseCreateAnswer = true;
-    await assert.rejects(w.instances.ensure(NOTHING_NEW, quiet));
+    await assert.rejects(w.instances.ensure(quiet));
     w.clerk.state.loseCreateAnswer = false;
     const lost = w.clerk.live()[0]!.id;
-    const up = await w.open().ensure(NOTHING_NEW, w.say);
+    const up = await w.open().ensure(w.say);
     assert.deepEqual(w.clerk.live().map((a) => a.id), [idOf(up[0])]);
     assert.notEqual(idOf(up[0]), lost);
     assert.equal(openApplications(w.workspace).length, 1);
     assert.ok(w.lines.some((line) => line.includes('retired (its keys are lost)')));
   });
 
-  it('recovers from a crash between create and configure by configuring the same application again', async () => {
+  it('retires an application whose create crashed before it was configured, and creates another', async () => {
     const w = world();
     w.clerk.state.failConfigure = 1;
-    await assert.rejects(w.instances.ensure(NOTHING_NEW, quiet), /configuring verify-throwaway-/);
-    const created = w.clerk.live()[0]!;
-    assert.equal(created.environment['user_settings.password_settings.min_length'], 15, 'still as Clerk made it');
-    assert.equal(w.open().recordedKey(), null);
-    const up = await w.open().ensure(NOTHING_NEW, w.say);
-    assert.deepEqual(up.map((view) => [idOf(view), view.created]), [[created.id, false]]);
-    assert.equal(w.clerk.applications.length, 1, 'no second application');
-    assert.equal(created.environment['user_settings.password_settings.min_length'], 8);
-    assert.ok(w.lines.includes(`settings changing ${created.id} from unknown settings to standard, because what it is on is not recorded`));
-    assert.ok(w.lines.some((line) => line.startsWith(`settings standard  on ${created.id} in 0.0s (Clerk answered in 0.00s, the instance showed it 0.00s later), ${LEAVES} settings match`)));
+    await assert.rejects(w.instances.ensure(quiet), /configuring verify-throwaway-/);
+    const crashed = w.clerk.live()[0]!;
+    assert.equal(recorded(w), null);
+    const up = await w.open().ensure(w.say);
+    assert.equal(crashed.deleted, true);
+    assert.deepEqual(up.map((view) => view.created), [true]);
+    assert.ok(w.lines.includes(`instance ${crashed.id} retired (what it is on is not recorded, and a test may have changed settings ${STANDARD_FILE} does not name)`), w.lines.join('\n'));
+    assert.equal(recorded(w), BASE_KEY);
   });
 
   it('fails when a required setting does not show after the PATCH', async () => {
     const w = world();
     w.clerk.state.ignoreConfigKey = 'auth_config.single_session_mode';
-    await assert.rejects(w.instances.ensure(NOTHING_NEW, quiet), (error: VerifyFailure) => error.code === 'INSTANCE_MISCONFIGURED' && !(error instanceof SettingsRefused) && error.message.includes(`does not match ${STANDARD_FILE}`) && error.message.includes('auth_config.single_session_mode is true, and the file says false'));
+    await assert.rejects(w.instances.ensure(quiet), (error: VerifyFailure) => error.code === 'INSTANCE_MISCONFIGURED' && !(error instanceof SettingsRefused) && error.message.includes(`does not match ${STANDARD_FILE}`) && error.message.includes('auth_config.single_session_mode is true, and the file says false'));
     assert.ok(w.slept.length > 0, 'it waited for the setting to take effect before failing');
     assert.equal(openApplications(w.workspace).length, 1, 'the application stays in the ledger for down');
-    assert.equal(w.open().recordedKey(), null, 'and nothing records it as being on the standard settings');
+    assert.equal(recorded(w), null, 'and nothing records it as being on the standard settings');
   });
 
-  it('compares the required settings and the declared ones, and nothing else the instance shows', async () => {
+  it('compares the required settings, and nothing else the instance shows', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, w.say);
+    await w.instances.ensure(w.say);
     const application = w.clerk.live()[0]!;
     assert.ok(w.lines.includes(`instance ${application.id}  up in 0.0s on standard, ${LEAVES} settings match ${STANDARD_FILE}`));
     application.environment['auth_config.reverification'] = false;
-    const applied = await w.instances.apply(mfaGroup, w.say);
-    assert.equal(await applied.stillApplied(), true, 'a setting that nothing requires and no spec declared does not fail a run');
-    await applied.release();
-    assert.equal((await w.open().ensure(NOTHING_NEW, quiet)).length, 1);
-    assert.equal(patches(w).length, 2, 'and it causes no repair');
-    assert.ok(w.lines.some((line) => line.startsWith(`settings ${MFA_LABEL}  on ${application.id}`) && line.endsWith(`${LEAVES} settings match`)));
+    const driven = await w.instances.drive();
+    assert.equal(await driven.stillStandard(), true, 'a setting that nothing requires does not fail a run');
+    await driven.release();
+    assert.equal((await w.open().ensure(quiet)).length, 1);
+    assert.equal(patches(w).length, 1, 'and it causes no repair');
   });
 
-  it('compares a leaf a declaration names though the standard file does not list it', async () => {
-    const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
-    const application = w.clerk.live()[0]!;
-    w.clerk.state.alsoMoves = { 'auth_config.reverification': false };
-    const declared: InstanceSettings = { config: MFA.config, environment: { ...MFA.environment, 'auth_config.reverification': false } };
-    const applied = await w.instances.apply(groupOf(declared, MFA_SPEC), w.say);
-    assert.ok(w.lines.some((line) => line.startsWith(`settings ${MFA_LABEL}  on ${application.id}`) && line.endsWith(`${LEAVES + 1} settings match`)), 'the declared leaf is one of the settings compared');
-    assert.equal(await applied.stillApplied(), true);
-    application.environment['auth_config.reverification'] = true;
-    assert.equal(await applied.stillApplied(), false);
-  });
 
   it('never writes a keys file over one that is there', async () => {
     const w = world();
@@ -541,16 +529,16 @@ describe('one throwaway application', () => {
       mkdirSync(instancesDir(w), { recursive: true });
       writeFileSync(cachedKeys, first);
     };
-    await assert.rejects(w.instances.ensure(NOTHING_NEW, writeFirst), { code: 'EEXIST' });
+    await assert.rejects(w.instances.ensure(writeFirst), { code: 'EEXIST' });
     assert.equal(readFileSync(cachedKeys, 'utf8'), first);
     assert.deepEqual(filesHolding(w, w.clerk.live()[0]!.sk), [], 'and the secret key of the application it could not record is on no disk');
   });
 
   it('creates a new application when Clerk no longer serves the old one', async () => {
     const w = world();
-    const first = await w.instances.ensure(NOTHING_NEW, quiet);
+    const first = await w.instances.ensure(quiet);
     w.clerk.live()[0]!.deleted = true;
-    const second = await w.open().ensure(NOTHING_NEW, w.say);
+    const second = await w.open().ensure(w.say);
     assert.notEqual(idOf(second[0]), idOf(first[0]));
     assert.equal(openApplications(w.workspace).length, 1);
     assert.ok(w.lines.includes(`instance ${idOf(first[0])} retired (Clerk no longer serves it)`));
@@ -558,9 +546,9 @@ describe('one throwaway application', () => {
 
   it('replaces an application whose deadline is near, before a run starts on it', async () => {
     const w = world();
-    const first = await w.instances.ensure(NOTHING_NEW, quiet);
+    const first = await w.instances.ensure(quiet);
     w.clock.at = T0 + 6 * HOUR - 20 * 60_000;
-    const second = await w.open().ensure(NOTHING_NEW, w.say);
+    const second = await w.open().ensure(w.say);
     assert.notEqual(idOf(second[0]), idOf(first[0]));
     assert.deepEqual(w.clerk.live().map((a) => a.id), [idOf(second[0])], 'the old one was deleted, not left for the reaper');
     assert.ok(w.lines.some((line) => line.includes('its deadline is near')));
@@ -568,11 +556,11 @@ describe('one throwaway application', () => {
 
   it('replaces an application that holds 60 of the 100 users a development instance allows', async () => {
     const w = world();
-    const first = await w.instances.ensure(NOTHING_NEW, quiet);
+    const first = await w.instances.ensure(quiet);
     w.clerk.live()[0]!.users = 59;
-    assert.equal(idOf((await w.open().ensure(NOTHING_NEW, quiet))[0]), idOf(first[0]), '59 users is still room for a run');
+    assert.equal(idOf((await w.open().ensure(quiet))[0]), idOf(first[0]), '59 users is still room for a run');
     w.clerk.live()[0]!.users = 60;
-    const second = await w.open().ensure(NOTHING_NEW, w.say);
+    const second = await w.open().ensure(w.say);
     assert.notEqual(idOf(second[0]), idOf(first[0]));
     assert.deepEqual(w.clerk.live().map((a) => a.id), [idOf(second[0])]);
     assert.ok(w.lines.includes(`instance ${idOf(first[0])} retired (it holds 60 of the 100 users a development instance allows)`));
@@ -580,19 +568,19 @@ describe('one throwaway application', () => {
 
   it('deletes an application it retires by its id when the listing it holds was taken before the application existed', async () => {
     const w = world();
-    const first = await w.instances.ensure(NOTHING_NEW, quiet);
+    const first = await w.instances.ensure(quiet);
     w.clerk.live()[0]!.users = 60;
     const stale = (async (input: string | URL, init?: RequestInit) => ((init?.method ?? 'GET') === 'GET' && String(input).endsWith('/platform/applications') ? new Response('[]', { status: 200 }) : w.clerk.fetch(input, init))) as typeof fetch;
-    const second = await w.open(1000, stale).ensure(NOTHING_NEW, w.say);
+    const second = await w.open(1000, stale).ensure(w.say);
     assert.ok(w.lines.includes(`instance ${idOf(first[0])} retired (it holds 60 of the 100 users a development instance allows)`));
     assert.deepEqual(w.clerk.live().map((a) => a.id), [idOf(second[0])], 'the retired application is gone from Clerk, not only from the ledger');
   });
 
   it('does not treat a Frontend API error as a deleted application', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     const broken = (async (input: string | URL, init?: RequestInit) => (String(input).includes('.clerk.accounts.dev') ? new Response('bad gateway', { status: 502 }) : w.clerk.fetch(input, init))) as typeof fetch;
-    await assert.rejects(w.open(1000, broken).ensure(NOTHING_NEW, quiet), /answered 502/);
+    await assert.rejects(w.open(1000, broken).ensure(quiet), /answered 502/);
     assert.equal(w.clerk.live().length, 1);
   });
 
@@ -600,52 +588,52 @@ describe('one throwaway application', () => {
     const dir = mkdtempSync(join(tmpdir(), 'verify-instances-'));
     const clerk = fakeClerk({ now: () => T0 });
     const instances = createInstances({ workspace: openWorkspace({ packageDir: dir, worktree: dir, home: join(dir, 'home') }), env: { CLERK_PLATFORM_API_KEY: PLATFORM_KEY }, runner: noOp, progress: quiet, fetch: clerk.fetch, now: () => T0 - 5 * HOUR });
-    await instances.ensure(NOTHING_NEW, quiet);
+    await instances.ensure(quiet);
     assert.equal(deadlineOf(clerk.live()[0]!.name)?.getTime(), T0 + 6 * HOUR);
   });
 
   it('fails with the likely cause and the fix when api.clerk.com refuses the own key of a new application, asks once, and keeps the application for down', async () => {
     const w = world();
     w.clerk.state.refuseInstanceKeys = true;
-    await assert.rejects(w.instances.ensure(NOTHING_NEW, quiet), keyRefused);
+    await assert.rejects(w.instances.ensure(quiet), keyRefused);
     assert.equal(openApplications(w.workspace).length, 1, 'the application stays in the ledger for down');
     assert.deepEqual(w.clerk.requests.filter((request) => request.url.startsWith('api.clerk.') && !request.url.startsWith('api.clerk.com/v1/platform/')).map((request) => request.url), ['api.clerk.com/v1/users/count'], 'one call, to api.clerk.com, and none to another name of the API');
   });
 
-  it('creates no application to apply a group, because only up and the start of a run create one', async () => {
+  it('creates no application to drive, because only up and the start of a run create one', async () => {
     const w = world();
-    await assert.rejects(w.instances.apply(mfaGroup, quiet), (error: VerifyFailure) => error.code === 'NOT_READY' && error.message === 'this worktree holds no application to put on the settings of a group' && error.fix === '{cli} up');
+    await assert.rejects(w.instances.drive(), (error: VerifyFailure) => error.code === 'NOT_READY' && error.message === 'this worktree holds no application for a run to drive on' && error.fix === '{cli} up');
     assert.deepEqual(w.clerk.requests, []);
   });
 
   it('rejects a lifetime shorter than a session can last', async () => {
     const w = world({ env: { CLERK_PLATFORM_API_KEY: PLATFORM_KEY, VERIFY_THROWAWAY_HOURS: '0' } });
-    await assert.rejects(w.instances.ensure(NOTHING_NEW, quiet), (error: VerifyFailure) => error.code === 'USAGE');
+    await assert.rejects(w.instances.ensure(quiet), (error: VerifyFailure) => error.code === 'USAGE');
     assert.equal(w.clerk.applications.length, 0);
   });
 
-  it('serves keys only while an instance is applied', async () => {
+  it('serves keys only while an instance is driven', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
-    assert.throws(() => w.instances.keys(), (error: VerifyFailure) => error.code === 'NOT_READY' && /no instance is applied/.test(error.message));
-    assert.throws(() => w.instances.clerk(), /no instance is applied/);
-    const applied = await w.instances.apply(standardGroup, quiet);
+    await w.instances.ensure(quiet);
+    assert.throws(() => w.instances.keys(), (error: VerifyFailure) => error.code === 'NOT_READY' && /no instance is driven/.test(error.message));
+    assert.throws(() => w.instances.clerk(), /no instance is driven/);
+    const driven = await w.instances.drive();
     assert.equal(w.instances.keys().pk, w.clerk.live()[0]!.pk);
     assert.equal(await w.instances.clerk().userCount(), 0);
-    await assert.rejects(w.instances.apply(mfaGroup, quiet), /still applied/, 'one run drives on one instance at a time');
-    await applied.release();
-    assert.throws(() => w.instances.keys(), /no instance is applied/);
+    await assert.rejects(w.instances.drive(), /still driven/, 'one run drives on one instance at a time');
+    await driven.release();
+    assert.throws(() => w.instances.keys(), /no instance is driven/);
   });
 
   it('keeps the record and the state in private files, writes the record once, and keeps the platform key nowhere', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, w.say);
+    await w.instances.ensure(w.say);
     const dir = instancesDir(w);
     const { name } = w.clerk.live()[0]!;
     const record = join(dir, `${name}.json`);
     const written = { bytes: readFileSync(record, 'utf8'), inode: statSync(record).ino };
-    for (const group of [mfaGroup, orgGroup, standardGroup]) await (await w.instances.apply(group, w.say)).release();
-    await w.open().ensure({ willChange: true }, w.say);
+    for (let run = 0; run < 3; run += 1) await (await w.instances.drive()).release();
+    await w.open().ensure(w.say);
     assert.deepEqual({ bytes: readFileSync(record, 'utf8'), inode: statSync(record).ino }, written, 'the record is written once');
     assert.deepEqual(readdirSync(dir).sort(), [`${name}.json`, `${name}.state.json`], 'no staging file is left behind');
     for (const file of readdirSync(dir).map((each) => join(dir, each))) assert.equal(statSync(file).mode & 0o777, 0o600, file);
@@ -657,23 +645,23 @@ describe('one throwaway application', () => {
 
   it('keeps the secret key of its application in no file of the worktree or the home, from the create to the down', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, w.say);
+    await w.instances.ensure(w.say);
     const { name, sk, pk } = w.clerk.live()[0]!;
     assert.deepEqual(filesHolding(w, sk), [], 'after the application is created');
-    for (const group of [mfaGroup, standardGroup]) {
-      const applied = await w.instances.apply(group, w.say);
+    for (let run = 0; run < 2; run += 1) {
+      const applied = await w.instances.drive();
       assert.equal(await w.instances.clerk().userCount(), 0, 'the run used the key');
       await applied.release();
     }
     assert.deepEqual(filesHolding(w, sk), [], 'after a run in the command that created it');
     const run = w.open();
-    await run.ensure(NOTHING_NEW, w.say);
-    const applied = await run.apply(mfaGroup, w.say);
+    await run.ensure(w.say);
+    const applied = await run.drive();
     assert.equal(await run.clerk().userCount(), 0, 'a run in a later command used the key it read from Clerk');
     await applied.release();
     assert.deepEqual(filesHolding(w, sk), [], 'after a run in a later command');
     const later = w.open();
-    await later.ensure({ willChange: true }, w.say);
+    await later.ensure(w.say);
     await later.doctorChecks({ live: false }, w.say);
     assert.deepEqual(filesHolding(w, sk), [], 'after another up and doctor');
     assert.equal(w.lines.join('\n').includes(sk), false);
@@ -686,9 +674,9 @@ describe('one throwaway application', () => {
   it('reads the secret key from the Platform API into a value that output redacts', async () => {
     const w = world();
     const unseen = 'sk_test_readFromClerkAndHeldInMemoryOnly';
-    const application = heldWithoutState(w, 'aaaaaaaa', unseen);
+    const application = heldOnStandard(w, 'aaaaaaaa', unseen);
     assert.equal(redact(`Bearer ${unseen}`), `Bearer ${unseen}`, 'nothing has read it yet');
-    const up = await w.open().ensure(NOTHING_NEW, quiet);
+    const up = await w.open().ensure(quiet);
     assert.deepEqual(up.map((view) => [idOf(view), view.created]), [[application.id, false]], 'the Backend API took the key that was read');
     assert.equal(redact(`Bearer ${unseen}`), 'Bearer <redacted>');
     assert.deepEqual(filesHolding(w, unseen), []);
@@ -696,11 +684,11 @@ describe('one throwaway application', () => {
 
   it('reads the secret key once in a command, however many calls use it, and again in the next command', async () => {
     const w = world();
-    const application = heldWithoutState(w, 'aaaaaaaa');
+    const application = heldOnStandard(w, 'aaaaaaaa');
     const command = w.open();
-    await command.ensure({ willChange: true }, quiet);
-    for (const group of [standardGroup, mfaGroup, orgGroup]) {
-      const applied = await command.apply(group, quiet);
+    await command.ensure(quiet);
+    for (let run = 0; run < 3; run += 1) {
+      const applied = await command.drive();
       await command.clerk().userCount();
       await command.clerk().usersOfRun(newRunId());
       await applied.release();
@@ -714,8 +702,8 @@ describe('one throwaway application', () => {
 
   it('reads no secret key in the command that creates the application, because the create answer carries it', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
-    const applied = await w.instances.apply(mfaGroup, quiet);
+    await w.instances.ensure(quiet);
+    const applied = await w.instances.drive();
     await w.instances.clerk().userCount();
     await applied.release();
     assert.deepEqual(secretKeyReads(w), []);
@@ -723,13 +711,12 @@ describe('one throwaway application', () => {
 
   it('reads no secret key for a down, a dry look at what is held, or an application another run drives', async () => {
     const w = world();
-    const application = heldWithoutState(w, 'aaaaaaaa');
-    assert.equal(w.open().recordedKey(), null);
+    const application = heldOnStandard(w, 'aaaaaaaa');
     const otherRun = 2000;
     w.alive.add(otherRun);
-    writeFileSync(join(instancesDir(w), `${application.name}.state.json`), `${JSON.stringify({ environmentKey: STANDARD_ENVIRONMENT_KEY, settings: STANDARD, drivers: [{ pid: otherRun, startedAt: T0 }] })}\n`);
-    await w.open().ensure(NOTHING_NEW, quiet);
-    await assert.rejects(w.open().apply(standardGroup, quiet), { code: 'DEVICE_BUSY' });
+    writeFileSync(join(instancesDir(w), `${application.name}.state.json`), `${JSON.stringify({ baseKey: BASE_KEY, pending: null, drivers: [{ pid: otherRun, startedAt: T0 }] })}\n`);
+    await w.open().ensure(quiet);
+    await assert.rejects(w.open().drive(), { code: 'DEVICE_BUSY' });
     await w.open().finish(w.workspace, { keepApplications: true }, quiet);
     await w.open().finish(w.workspace, { keepApplications: false }, quiet);
     assert.deepEqual(secretKeyReads(w), []);
@@ -738,14 +725,14 @@ describe('one throwaway application', () => {
 
   it('fails with the scope by name when the Platform API key may not read secret keys, and falls back to nothing on disk', async () => {
     const w = world();
-    const application = heldWithoutState(w, 'aaaaaaaa');
+    const application = heldOnStandard(w, 'aaaaaaaa');
     w.clerk.state.scopes = PLATFORM_SCOPES.filter((scope) => scope !== SECRET_KEY_SCOPE);
     const missingScope = (error: VerifyFailure): boolean =>
       error.code === 'KEYS_MISSING' &&
       error.message === `the Platform API key lacks the scope ${SECRET_KEY_SCOPE}, which reading the secret key of ${application.name} needs (403 authorization_missing_scopes)` &&
       error.fix === `add ${SECRET_KEY_SCOPE} to the Platform API key; the secret key of an application is kept on no disk, so each command that needs it reads it from Clerk`;
-    await assert.rejects(w.open().ensure(NOTHING_NEW, quiet), missingScope);
-    await assert.rejects(w.open().apply(standardGroup, quiet), missingScope);
+    await assert.rejects(w.open().ensure(quiet), missingScope);
+    await assert.rejects(w.open().drive(), missingScope);
     const api = (await w.open().doctorChecks({ live: false }, quiet)).find((check) => check.id === 'clerk-api')!;
     assert.deepEqual([api.ok, api.detail, api.fix], [false, `the Platform API key lacks the scope ${SECRET_KEY_SCOPE}, which reading the secret key of ${application.name} needs (403 authorization_missing_scopes)`, `add ${SECRET_KEY_SCOPE} to the Platform API key; the secret key of an application is kept on no disk, so each command that needs it reads it from Clerk`]);
     assert.deepEqual(filesHolding(w, application.sk), [], 'the secret key is in no file');
@@ -753,19 +740,19 @@ describe('one throwaway application', () => {
     assert.deepEqual(writes(w), [], 'the application was neither deleted nor replaced');
     assert.deepEqual(openApplications(w.workspace).map((entry) => entry.name), [application.name]);
     w.clerk.state.scopes = PLATFORM_SCOPES;
-    assert.deepEqual((await w.open().ensure(NOTHING_NEW, quiet)).map((view) => [idOf(view), view.created]), [[application.id, false]], 'with the scope, the same application serves again');
+    assert.deepEqual((await w.open().ensure(quiet)).map((view) => [idOf(view), view.created]), [[application.id, false]], 'with the scope, the same application serves again');
   });
 
   it('reports any other refusal of the secret key as the Platform API reports the rest', async () => {
     const w = world();
-    const application = heldWithoutState(w, 'aaaaaaaa');
+    const application = heldOnStandard(w, 'aaaaaaaa');
     const answering = (status: number, body: unknown): typeof fetch => (async (input: string | URL, init?: RequestInit) => (String(input).endsWith('?include_secret_keys=true') ? new Response(JSON.stringify(body), { status }) : w.clerk.fetch(input, init))) as typeof fetch;
     await assert.rejects(
-      w.open(1000, answering(500, { errors: [{ code: 'internal' }] })).ensure(NOTHING_NEW, quiet),
+      w.open(1000, answering(500, { errors: [{ code: 'internal' }] })).ensure(quiet),
       (error: VerifyFailure) => error.code === 'NOT_READY' && error.message === `Clerk's Platform API answered 500 internal to reading the secret key of ${application.name}` && error.fix === 'rerun; if it repeats, run `{cli} doctor`',
     );
     await assert.rejects(
-      w.open(1000, answering(200, { application_id: application.id, instances: [{ environment_type: 'development', instance_id: application.instanceId, publishable_key: application.pk }] })).ensure(NOTHING_NEW, quiet),
+      w.open(1000, answering(200, { application_id: application.id, instances: [{ environment_type: 'development', instance_id: application.instanceId, publishable_key: application.pk }] })).ensure(quiet),
       (error: VerifyFailure) => error.code === 'NOT_READY' && error.message === `Clerk's answer about ${application.name} carries no secret key of a development instance`,
     );
     assert.deepEqual(writes(w), []);
@@ -773,7 +760,7 @@ describe('one throwaway application', () => {
 
   it('names the scopes Clerk reports as missing when it refuses the read, and the secret key scope when Clerk names none', async () => {
     const w = world();
-    const application = heldWithoutState(w, 'aaaaaaaa');
+    const application = heldOnStandard(w, 'aaaaaaaa');
     const refusing = (meta: unknown): typeof fetch =>
       (async (input: string | URL, init?: RequestInit) =>
         String(input).endsWith('?include_secret_keys=true') ? new Response(JSON.stringify({ errors: [{ code: 'authorization_missing_scopes', ...(meta === undefined ? {} : { meta }) }] }), { status: 403 }) : w.clerk.fetch(input, init)) as typeof fetch;
@@ -781,175 +768,106 @@ describe('one throwaway application', () => {
       error.code === 'KEYS_MISSING' &&
       error.message === `the Platform API key lacks ${named}, which reading the secret key of ${application.name} needs (403 authorization_missing_scopes)` &&
       error.fix === `add ${added} to the Platform API key; the secret key of an application is kept on no disk, so each command that needs it reads it from Clerk`;
-    await assert.rejects(w.open(1000, refusing({ scopes: ['applications:read'] })).ensure(NOTHING_NEW, quiet), lacking('the scope applications:read', 'applications:read'));
+    await assert.rejects(w.open(1000, refusing({ scopes: ['applications:read'] })).ensure(quiet), lacking('the scope applications:read', 'applications:read'));
     await assert.rejects(
-      w.open(1000, refusing({ scopes: ['applications:read', SECRET_KEY_SCOPE] })).ensure(NOTHING_NEW, quiet),
+      w.open(1000, refusing({ scopes: ['applications:read', SECRET_KEY_SCOPE] })).ensure(quiet),
       lacking(`the scopes applications:read and ${SECRET_KEY_SCOPE}`, `applications:read and ${SECRET_KEY_SCOPE}`),
     );
-    for (const meta of [undefined, { scopes: [] }, { scopes: 'all' }]) await assert.rejects(w.open(1000, refusing(meta)).ensure(NOTHING_NEW, quiet), lacking(`the scope ${SECRET_KEY_SCOPE}`, SECRET_KEY_SCOPE));
+    for (const meta of [undefined, { scopes: [] }, { scopes: 'all' }]) await assert.rejects(w.open(1000, refusing(meta)).ensure(quiet), lacking(`the scope ${SECRET_KEY_SCOPE}`, SECRET_KEY_SCOPE));
   });
 });
 
-describe('putting the application on the settings a group declares', () => {
-  it('drives three groups on one application with one create and three PATCHes in all', async () => {
+describe('keeping the application on the standard settings', () => {
+  it('repairs an application that no longer shows the standard settings', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, w.say);
+    await w.instances.ensure(quiet);
     const application = w.clerk.live()[0]!;
-    const seen: (readonly [string, boolean, unknown, unknown])[] = [];
-    for (const group of [standardGroup, mfaGroup, orgGroup]) {
-      const applied = await w.instances.apply(group, w.say);
-      assert.deepEqual(applied.instance, { id: application.id, name: application.name });
-      assert.equal(applied.keys.pk, application.pk);
-      seen.push([group.settings.label, applied.changed, application.environment['user_settings.sign_up.mfa.required'], application.environment['organization_settings.force_organization_selection']]);
-      assert.equal(await applied.stillApplied(), true);
-      await applied.release();
-    }
-    assert.deepEqual(seen, [['standard', false, false, false], [MFA_LABEL, true, true, false], [ORG_LABEL, true, false, true]], 'the next group returns what the last one changed to standard');
-    assert.deepEqual(writes(w), ['POST /applications', `PATCH /applications/${application.id}/config`, `PATCH /applications/${application.id}/config`, `PATCH /applications/${application.id}/config`]);
-    assert.equal(w.clerk.applications.length, 1, 'never a second application');
-    assert.deepEqual(patches(w)[1]!.body, MFA_BODY);
-    assert.deepEqual((patches(w)[2]!.body as { auth_multi_factor: unknown }).auth_multi_factor, standardFile().config.auth_multi_factor, 'the body is always the whole standard config with the declaration laid over it');
-    assert.deepEqual(stateOf(w, application.name).settings, orgGroup.settings);
-    assert.ok(w.lines.includes(`settings standard  already on ${application.id}`));
-    assert.ok(w.lines.includes(`settings changing ${application.id} from standard to ${MFA_LABEL}, which ${MFA_SPEC} declares`));
-    assert.ok(w.lines.includes(`settings ${MFA_LABEL}  on ${application.id} in 0.0s (Clerk answered in 0.00s, the instance showed it 0.00s later), ${LEAVES} settings match`));
-    assert.ok(w.lines.includes(`settings changing ${application.id} from ${MFA_LABEL} to ${ORG_LABEL}, which ${ORG_SPEC} declares`));
-  });
-
-  it('returns to standard for the first spec of a standard group, and a later run finds the settings recorded', async () => {
-    const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
-    const id = w.clerk.live()[0]!.id;
-    await (await w.instances.apply(mfaGroup, quiet)).release();
-    const later = w.open();
-    assert.equal(later.recordedKey(), mfaGroup.settings.key);
-    assert.deepEqual((await later.ensure(NOTHING_NEW, quiet)).map((view) => view.settings), [MFA_LABEL], 'up leaves the settings alone and says what they are');
-    const before = patches(w).length;
-    await (await later.apply(mfaGroup, w.say)).release();
-    assert.equal(patches(w).length, before, 'the same settings again cost no PATCH');
-    await (await later.apply(standardGroup, w.say)).release();
-    assert.ok(w.lines.includes(`settings changing ${id} from ${MFA_LABEL} to standard, for ${STANDARD_SPEC}`));
-    assert.equal(w.clerk.live()[0]!.environment['user_settings.sign_up.mfa.required'], false);
+    application.environment['user_settings.sign_up.mfa.required'] = true;
+    await w.open().ensure(w.say);
+    assert.ok(w.lines.includes(`settings changing ${application.id} from standard to standard, because it no longer shows standard`));
+    assert.equal(application.environment['user_settings.sign_up.mfa.required'], false);
+    assert.equal(patches(w).length, 2);
   });
 
   it('sends the PATCH again after a crash between the PATCH and the record', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     const application = w.clerk.live()[0]!;
+    application.environment['user_settings.sign_up.mfa.required'] = true;
     let patched = false;
     const dying = (async (input: string | URL, init?: RequestInit) => {
       if (patched && String(input).includes('.clerk.accounts.dev')) throw new Error('the process died here');
       patched ||= init?.method === 'PATCH';
       return w.clerk.fetch(input, init);
     }) as typeof fetch;
-    await assert.rejects(w.open(1000, dying).apply(mfaGroup, quiet), /the process died here/);
-    assert.equal(application.environment['user_settings.sign_up.mfa.required'], true, 'Clerk applied the change');
-    assert.equal(stateOf(w, application.name).settings, undefined, 'and nothing records it');
+    await assert.rejects(w.open(1000, dying).ensure(quiet), /the process died here/);
     const before = patches(w).length;
-    await (await w.open().apply(mfaGroup, w.say)).release();
-    assert.equal(patches(w).length, before + 1);
-    assert.ok(w.lines.includes(`settings changing ${application.id} from unknown settings to ${MFA_LABEL}, which ${MFA_SPEC} declares`));
-    assert.equal(w.open().recordedKey(), mfaGroup.settings.key);
-  });
-
-  it('repairs recorded settings that the live environment contradicts', async () => {
-    const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
-    const application = w.clerk.live()[0]!;
     application.environment['user_settings.sign_up.mfa.required'] = true;
-    await w.open().ensure(NOTHING_NEW, w.say);
-    assert.ok(w.lines.includes(`settings changing ${application.id} from standard to standard, because it no longer shows standard`));
-    assert.equal(application.environment['user_settings.sign_up.mfa.required'], false);
-
-    await (await w.open().apply(mfaGroup, quiet)).release();
-    application.environment['user_settings.sign_up.mfa.required'] = false;
-    const before = patches(w).length;
-    const applied = await w.open().apply(mfaGroup, quiet);
-    assert.equal(patches(w).length, before + 1, 'a record is trusted only after the live environment agrees');
-    assert.notEqual(applied.changed, null);
-    assert.equal(application.environment['user_settings.sign_up.mfa.required'], true);
+    await w.open().ensure(quiet);
+    assert.equal(patches(w).length, before + 1, 'the environment still does not show standard, so the repair is sent again');
+    assert.equal(recorded(w), BASE_KEY);
+    await w.open().ensure(quiet);
+    assert.equal(patches(w).length, before + 1, 'and once it shows, nothing more');
   });
 
-  it('says after a group whether the settings still hold', async () => {
+  it('says after a run whether the application still shows the standard settings', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
-    const applied = await w.instances.apply(mfaGroup, quiet);
-    assert.equal(await applied.stillApplied(), true);
+    await w.instances.ensure(quiet);
+    const driven = await w.instances.drive();
+    assert.equal(await driven.stillStandard(), true);
     const { environment } = w.clerk.live()[0]!;
-    environment['user_settings.sign_up.mfa.required'] = false;
-    assert.equal(await applied.stillApplied(), false);
     environment['user_settings.sign_up.mfa.required'] = true;
-    assert.equal(await applied.stillApplied(), true);
+    assert.equal(await driven.stillStandard(), false);
+    environment['user_settings.sign_up.mfa.required'] = false;
+    assert.equal(await driven.stillStandard(), true);
     environment['auth_config.test_mode'] = false;
-    assert.equal(await applied.stillApplied(), false, 'a required setting that no longer holds counts too');
+    assert.equal(await driven.stillStandard(), false, 'a required setting that no longer holds counts too');
   });
 
-  it('never retires an application over a torn or missing state file, and repairs it instead', async () => {
-    for (const damage of ['torn', 'missing'] as const) {
+  it('retires an application whose state file is torn or missing, because what a test changed there is unknown', async () => {
+    for (const damage of ['torn', 'missing', 'from before settings changed in tests'] as const) {
       const w = world();
-      await w.instances.ensure(NOTHING_NEW, quiet);
+      await w.instances.ensure(quiet);
       const application = w.clerk.live()[0]!;
       const stateFile = join(instancesDir(w), `${application.name}.state.json`);
-      if (damage === 'torn') writeFileSync(stateFile, '{"settings":{"key":"');
-      else rmSync(stateFile);
-      const keys = readFileSync(join(instancesDir(w), `${application.name}.json`), 'utf8');
-      assert.equal(w.open().recordedKey(), null, damage);
-      const up = await w.open().ensure(NOTHING_NEW, quiet);
-      assert.deepEqual(up.map((view) => [idOf(view), view.created]), [[application.id, false]], damage);
-      assert.deepEqual(writes(w).slice(1), [`PATCH /applications/${application.id}/config`, `PATCH /applications/${application.id}/config`], `${damage}: one PATCH to create it and one to repair it, and no delete`);
-      assert.equal(readFileSync(join(instancesDir(w), `${application.name}.json`), 'utf8'), keys, damage);
-      assert.equal(w.open().recordedKey(), STANDARD.key, damage);
+      if (damage === 'torn') writeFileSync(stateFile, '{"baseKey":"');
+      else if (damage === 'missing') rmSync(stateFile);
+      else writeFileSync(stateFile, JSON.stringify({ environmentKey: 'aaaaaaaaaaaa', settings: { key: 'bbbbbbbbbbbb', label: 'standard' }, drivers: [] }));
+      assert.equal(recorded(w), null, damage);
+      const up = await w.open().ensure(quiet);
+      assert.deepEqual(up.map((view) => view.created), [true], damage);
+      assert.equal(application.deleted, true, damage);
+      assert.equal(recorded(w), BASE_KEY, damage);
     }
   });
 
-  it('treats a record made against another standard file as no record', async () => {
+  it('returns an application recorded against another standard file to the standard settings, and does not fail on what that file expected', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
-    const name = w.clerk.live()[0]!.name;
-    writeFileSync(join(instancesDir(w), `${name}.state.json`), JSON.stringify({ settings: { ...STANDARD, key: '000000000000' }, drivers: [] }));
-    assert.equal(w.open().recordedKey(), null);
-  });
-
-  it('returns an application recorded against another standard environment to the standard settings, and does not fail on what that file expected', async () => {
-    const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     const application = w.clerk.live()[0]!;
     const OTHER_RUN = 4242;
-    writeFileSync(join(instancesDir(w), `${application.name}.state.json`), JSON.stringify({ environmentKey: '000000000000', settings: STANDARD, drivers: [{ pid: OTHER_RUN, startedAt: T0 }] }));
-    assert.equal(w.open().recordedKey(), null, 'what the application is on is unknown');
+    writeFileSync(join(instancesDir(w), `${application.name}.state.json`), JSON.stringify({ baseKey: '000000000000', pending: null, drivers: [{ pid: OTHER_RUN, startedAt: T0 }] }));
 
     w.alive.add(OTHER_RUN);
     const before = patches(w).length;
-    await w.open().ensure(NOTHING_NEW, quiet);
+    await w.open().ensure(quiet);
     assert.equal(patches(w).length, before, 'the run recorded as driving on it is still believed');
 
     w.alive.clear();
-    await w.open().ensure(NOTHING_NEW, w.say);
-    assert.ok(w.lines.includes(`settings changing ${application.id} from unknown settings to standard, because what it is on is not recorded`));
-    assert.deepEqual(stateOf(w, application.name), { environmentKey: STANDARD_ENVIRONMENT_KEY, settings: STANDARD, drivers: [{ pid: OTHER_RUN, startedAt: T0 }] });
+    await w.open().ensure(w.say);
+    assert.ok(w.lines.includes(`settings changing ${application.id} from standard to standard, because ${STANDARD_FILE} changed since it was configured`), w.lines.join('\n'));
+    assert.deepEqual(stateOf(w, application.name), { baseKey: BASE_KEY, pending: null, drivers: [{ pid: OTHER_RUN, startedAt: T0 }] });
   });
 
-  it('moves an application whose state file is lost straight to the declared settings, with one request', async () => {
+  it('drives and deletes an application the worktree already holds, without creating one', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
-    const application = w.clerk.live()[0]!;
-    rmSync(join(instancesDir(w), `${application.name}.state.json`));
-    const before = patches(w).length;
-    await (await w.open().apply(mfaGroup, quiet)).release();
-    assert.deepEqual(patches(w).slice(before).map((patch) => patch.body), [MFA_BODY], 'the body is the whole standard config with the declaration laid over it, so nothing has to come first');
-    assert.deepEqual(stateOf(w, application.name).settings, mfaGroup.settings);
-    assert.equal(application.environment['user_settings.sign_up.mfa.required'], true);
-  });
-
-  it('drives and deletes an application the worktree holds with no state file, without creating one', async () => {
-    const w = world();
-    const old = heldWithoutState(w, 'aaaaaaaa');
+    const old = heldOnStandard(w, 'aaaaaaaa');
     const instances = w.open();
-    const up = await instances.ensure(NOTHING_NEW, w.say);
+    const up = await instances.ensure(w.say);
     assert.deepEqual(up.map((view) => [idOf(view), view.created, view.settings]), [[old.id, false, 'standard']]);
-    const applied = await instances.apply(mfaGroup, quiet);
-    assert.equal(applied.instance.id, old.id);
-    await applied.release();
+    const driven = await instances.drive();
+    assert.equal(driven.instance.id, old.id);
+    await driven.release();
     const finished = await w.open().finish(w.workspace, { keepApplications: false }, quiet);
     assert.deepEqual(finished.map((application) => application.name), [old.name]);
     assert.equal(w.clerk.live().length, 0);
@@ -958,52 +876,309 @@ describe('putting the application on the settings a group declares', () => {
   });
 });
 
+describe('changing settings in a test', () => {
+  const SETUP_MFA = 'specs/features/session-tasks/setup-mfa.e2e.ts:8';
+  const REQUIRED = 'auth_multi_factor.required_for_sign_up';
+  const SHOWS_REQUIRED = 'user_settings.sign_up.mfa.required';
+  const AUTHENTICATOR = 'auth_multi_factor.authenticator_app.enabled';
+  const SHOWS_AUTHENTICATOR = 'user_settings.attributes.authenticator_app.enabled';
+  const GMAIL_DOTS = 'restrictions.ignore_dots_for_gmail_addresses';
+
+  async function driven(w: World) {
+    await w.instances.ensure(quiet);
+    return w.instances.drive();
+  }
+  const leaf = (w: World, name: string): Json | undefined => configLeaves(w.clerk.live()[0]!.config)[name];
+  const shownLeaf = (w: World, name: string): Json | undefined => w.clerk.live()[0]!.environment[name];
+  const pendingOf = (w: World) => {
+    const pending = stateOf(w, w.clerk.live()[0]!.name).pending;
+    if (pending === null || pending === undefined) return pending;
+    const { sections: _sections, ...shown } = pending;
+    return shown;
+  };
+  const sentSinceChange = (w: World, before: number) => w.clerk.platformRequests().slice(before).filter((request) => request.method === 'PATCH').map((request) => [request.url.endsWith('?dry_run=true') ? 'dry run' : 'change', request.body]);
+
+  it('turns a setting on for a test, and puts back exactly the value it read before', async () => {
+    const w = world();
+    const driving = await driven(w);
+    const before = w.clerk.platformRequests().length;
+    const made = await driving.useSettings({ config: { [REQUIRED]: true }, environment: { [SHOWS_REQUIRED]: true } }, SETUP_MFA);
+    assert.deepEqual(made, { changed: [{ leaf: REQUIRED, from: false, to: true }], shown: [SHOWS_REQUIRED] });
+    assert.deepEqual([leaf(w, REQUIRED), shownLeaf(w, SHOWS_REQUIRED)], [true, true]);
+    assert.deepEqual(pendingOf(w), { config: { [REQUIRED]: false }, environment: { [SHOWS_REQUIRED]: false } }, 'the state file says what to put back');
+    assert.deepEqual(sentSinceChange(w, before), [['dry run', MFA.config], ['change', MFA.config]], 'only the leaf the test asked for is sent, never the whole standard config');
+    assert.ok(w.lines.includes(`settings ${REQUIRED}=true  on ${w.clerk.live()[0]!.id} for ${SETUP_MFA}; the environment showed ${SHOWS_REQUIRED} 0.0s later`), w.lines.join('\n'));
+
+    await driving.restore();
+    assert.deepEqual([leaf(w, REQUIRED), shownLeaf(w, SHOWS_REQUIRED)], [false, false]);
+    assert.equal(pendingOf(w), null);
+    assert.deepEqual(driving.changes(), [{ at: SETUP_MFA, changed: [{ leaf: REQUIRED, from: false, to: true }], shown: [SHOWS_REQUIRED], restored: true }]);
+    assert.equal(await driving.stillStandard(), true);
+  });
+
+  it('turns a setting off the same way, and records the leaves that moved when the test names none', async () => {
+    const w = world();
+    const driving = await driven(w);
+    const made = await driving.useSettings({ config: { [AUTHENTICATOR]: false } }, null);
+    assert.deepEqual(made, { changed: [{ leaf: AUTHENTICATOR, from: true, to: false }], shown: [SHOWS_AUTHENTICATOR] });
+    assert.equal(shownLeaf(w, SHOWS_AUTHENTICATOR), false);
+    assert.deepEqual(pendingOf(w), { config: { [AUTHENTICATOR]: true }, environment: { [SHOWS_AUTHENTICATOR]: true } });
+    await driving.restore();
+    assert.deepEqual([leaf(w, AUTHENTICATOR), shownLeaf(w, SHOWS_AUTHENTICATOR)], [true, true]);
+    assert.equal(driving.changes()[0]!.at, null);
+  });
+
+  it('changes and restores a leaf that base.json does not name', async () => {
+    const w = world();
+    const driving = await driven(w);
+    assert.equal(Object.hasOwn(configLeaves(standardFile().config), GMAIL_DOTS), false);
+    await driving.useSettings({ config: { [GMAIL_DOTS]: true } }, null);
+    assert.equal(leaf(w, GMAIL_DOTS), true);
+    await driving.restore();
+    assert.equal(leaf(w, GMAIL_DOTS), OUTSIDE_BASE[GMAIL_DOTS]);
+  });
+
+  it('puts back every leaf of a section, also one Clerk moves when the setting changes back', async () => {
+    const w = world();
+    const driving = await driven(w);
+    await driving.useSettings({ config: { 'organization_settings.enabled': false } }, null);
+    await driving.restore();
+    assert.deepEqual([leaf(w, 'organization_settings.enabled'), leaf(w, 'organization_settings.force_organization_selection')], [true, false]);
+    assert.equal(await driving.stillStandard(), true);
+  });
+
+  it('restores the environment of before the first change when a second change moves a leaf the first did not name', async () => {
+    const w = world();
+    const driving = await driven(w);
+    await driving.useSettings({ config: { [REQUIRED]: true, [AUTHENTICATOR]: false }, environment: { [SHOWS_REQUIRED]: true } }, null);
+    await driving.useSettings({ config: { [AUTHENTICATOR]: true } }, null);
+    await driving.restore();
+    assert.deepEqual([leaf(w, REQUIRED), leaf(w, AUTHENTICATOR), shownLeaf(w, SHOWS_AUTHENTICATOR)], [false, true, true]);
+    assert.deepEqual(driving.changes().map((change) => change.restored), [true, true]);
+  });
+
+  it('puts a leaf a test changed twice back to its value before the first change', async () => {
+    const w = world();
+    const driving = await driven(w);
+    await driving.useSettings({ config: { 'auth_password.min_length': 10 } }, null);
+    await driving.useSettings({ config: { 'auth_password.min_length': 12 } }, null);
+    assert.deepEqual(pendingOf(w), { config: { 'auth_password.min_length': 8 }, environment: { 'user_settings.password_settings.min_length': 8 } });
+    await driving.restore();
+    assert.equal(leaf(w, 'auth_password.min_length'), 8);
+    assert.deepEqual(driving.changes().map((change) => [change.changed[0]!.from, change.changed[0]!.to, change.restored]), [[8, 10, true], [10, 12, true]]);
+  });
+
+  it('waits out the window and says so when no leaf of the environment moves, without failing the call', async () => {
+    const w = world();
+    const driving = await driven(w);
+    w.clerk.state.ignoreConfigKey = 'user_settings.restrictions.ignore_dots_for_gmail_addresses';
+    const made = await driving.useSettings({ config: { [GMAIL_DOTS]: true } }, null);
+    assert.deepEqual(made.shown, []);
+    assert.ok(w.lines.includes('settings no leaf of the public environment changed within 15s; if the app reads this setting, pass environment so the wait can check it'));
+  });
+
+  it('fails the call when the environment it names never shows the change, and still restores what changed', async () => {
+    const w = world();
+    const driving = await driven(w);
+    w.clerk.state.ignoreConfigKey = SHOWS_REQUIRED;
+    await assert.rejects(
+      driving.useSettings({ config: { [REQUIRED]: true }, environment: { [SHOWS_REQUIRED]: true } }, SETUP_MFA),
+      (error: VerifyFailure) => error instanceof SettingsNotShown && error.message === `${SETUP_MFA} changed ${REQUIRED}=true on ${w.clerk.live()[0]!.id}, and 15s later the environment does not show it: ${SHOWS_REQUIRED} is false, and it should be true`,
+    );
+    assert.equal(leaf(w, REQUIRED), true, 'Clerk took the change');
+    assert.deepEqual(pendingOf(w), { config: { [REQUIRED]: false }, environment: {} });
+    await driving.restore();
+    assert.equal(leaf(w, REQUIRED), false);
+    assert.equal(pendingOf(w), null);
+  });
+
+  it('refuses before anything changes when Clerk refuses, has no such leaf, or would store another value', async () => {
+    const w = world();
+    const driving = await driven(w);
+    const id = w.clerk.live()[0]!.id;
+    const config = structuredClone(w.clerk.live()[0]!.config);
+    const before = w.clerk.platformRequests().length;
+    w.clerk.state.refusals.push({ path: 'compliance.legal_consent.enabled', value: true, status: 422, code: 'form_param_missing', param: 'terms_of_service_url', message: 'is required' });
+    await assert.rejects(
+      driving.useSettings({ config: { 'compliance.legal_consent.enabled': true } }, SETUP_MFA),
+      (error: VerifyFailure) =>
+        error instanceof SettingsRefused &&
+        error.message === `${SETUP_MFA} asks for compliance.legal_consent.enabled=true, and Clerk's Platform API refused it: terms_of_service_url (422 form_param_missing): is required` &&
+        error.fix === 'add `terms_of_service_url` to config, since Clerk requires it with what the call asks for, or remove what requires it',
+    );
+    w.clerk.state.dropFromAfter = 'auth_multi_factor.required_for_sign_upp';
+    await assert.rejects(
+      driving.useSettings({ config: { 'auth_multi_factor.required_for_sign_upp': true } }, SETUP_MFA),
+      (error: VerifyFailure) =>
+        error instanceof SettingsRefused &&
+        error.message === `${SETUP_MFA} asks for auth_multi_factor.required_for_sign_upp, and the instance config has no such leaf` &&
+        error.fix === 'check the spelling with `{cli} settings auth_multi_factor`; Clerk has authenticator_app, backup_code, phone_code, required_for_sign_in, required_for_sign_up under `auth_multi_factor`',
+    );
+    w.clerk.state.dropFromAfter = null;
+    await assert.rejects(
+      driving.useSettings({ config: { 'auth_multi_factor.email_code.enabled': true } }, null),
+      (error: VerifyFailure) => error instanceof SettingsRefused && error.message === 'host.useSettings asks for auth_multi_factor.email_code.enabled, and Clerk would set auth_multi_factor.email_code.enabled, which has no value before the change, so it could not be put back',
+    );
+    w.clerk.state.storesInstead = { 'auth_password.min_length': 99 };
+    await assert.rejects(driving.useSettings({ config: { 'auth_password.min_length': 10 } }, null), (error: VerifyFailure) => error instanceof SettingsRefused && error.message === 'host.useSettings asks for auth_password.min_length=10, and Clerk would store 99');
+    await assert.rejects(driving.useSettings({ config: { [REQUIRED]: true }, environment: { [SHOWS_REQUIRED]: false } }, null), (error: VerifyFailure) => error instanceof SettingsRefused && error.message === `host.useSettings expects ${SHOWS_REQUIRED} to show the change, and the environment shows those values before it`);
+    assert.deepEqual(sentSinceChange(w, before).map(([kind]) => kind), ['dry run', 'dry run', 'dry run', 'dry run', 'dry run'], 'nothing but dry runs reached Clerk');
+    assert.deepEqual(w.clerk.live()[0]!.config, config);
+    assert.equal(pendingOf(w), null);
+    assert.equal(id, w.clerk.live()[0]!.id);
+  });
+
+  it('changes nothing, and has nothing to restore, when the instance already holds what the test asks for', async () => {
+    const w = world();
+    const driving = await driven(w);
+    const made = await driving.useSettings({ config: { [REQUIRED]: false } }, null);
+    assert.deepEqual(made, { changed: [], shown: [] });
+    assert.equal(pendingOf(w), null);
+    assert.deepEqual(driving.changes(), [{ at: null, changed: [], shown: [], restored: true }]);
+  });
+
+  for (const crash of ['between the snapshot and the change', 'after the change, before the environment showed it'] as const) {
+    it(`restores on the next up after a crash ${crash}, and a second up has nothing left to do`, async () => {
+      const w = world();
+      await driven(w);
+      let changing = false;
+      const dying = (async (input: string | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (init?.method === 'PATCH' && !url.endsWith('?dry_run=true')) {
+          if (crash === 'between the snapshot and the change') throw new Error('the process died here');
+          changing = true;
+          return w.clerk.fetch(input, init);
+        }
+        if (changing && url.includes('.clerk.accounts.dev')) throw new Error('the process died here');
+        return w.clerk.fetch(input, init);
+      }) as typeof fetch;
+      const doomed = w.open(1000, dying);
+      await assert.rejects((await doomed.drive()).useSettings({ config: { [REQUIRED]: true }, environment: { [SHOWS_REQUIRED]: true } }, SETUP_MFA), /the process died here/);
+      assert.equal(leaf(w, REQUIRED), crash === 'between the snapshot and the change' ? false : true);
+      assert.deepEqual(pendingOf(w), { config: { [REQUIRED]: false }, environment: {} }, 'the snapshot was on disk before the change was sent');
+
+      const application = w.clerk.live()[0]!;
+      const up = await w.open(2000).ensure(w.say);
+      assert.deepEqual(up.map((view) => [view.id, view.settings]), [[application.id, 'standard']], 'the same application, restored');
+      assert.deepEqual([leaf(w, REQUIRED), shownLeaf(w, SHOWS_REQUIRED)], [false, false]);
+      assert.equal(pendingOf(w), null);
+      assert.ok(w.lines.includes(`settings restoring ${application.id}, because a run ended without restoring ${REQUIRED}`), w.lines.join('\n'));
+      const before = patches(w).length;
+      await w.open(2000).ensure(quiet);
+      assert.equal(patches(w).length, before, 'the second up finds nothing pending');
+    });
+  }
+
+  it('restores nothing twice', async () => {
+    const w = world();
+    const driving = await driven(w);
+    await driving.useSettings({ config: { [REQUIRED]: true } }, null);
+    await driving.restore();
+    const before = w.clerk.platformRequests().length;
+    await driving.restore();
+    assert.equal(w.clerk.platformRequests().length, before);
+  });
+
+  it('retires an application whose restore Clerk refuses, and creates another', async () => {
+    const w = world();
+    const driving = await driven(w);
+    await driving.useSettings({ config: { [GMAIL_DOTS]: true } }, null);
+    await driving.release();
+    const application = w.clerk.live()[0]!;
+    w.clerk.state.refusals.push({ path: GMAIL_DOTS, value: false, status: 409, code: 'user_settings_invalid', message: 'the settings are not valid together' });
+    const up = await w.open(2000).ensure(w.say);
+    assert.equal(application.deleted, true);
+    assert.deepEqual(up.map((view) => view.created), [true]);
+    assert.ok(w.lines.some((line) => line.startsWith(`instance ${application.id} retired (the settings a test changed could not be restored: `)), w.lines.join('\n'));
+  });
+});
+
+describe('the settings verb', () => {
+  const deps = (w: World): Deps => ({ host, workspace: w.workspace, runner: async () => assert.fail('settings runs no commands'), env: w.env, progress: w.say, instances: w.open(2000) });
+
+  it('prints the live config leaves of the held application under the prefixes it names, sorted, with no device leased', async () => {
+    const w = world();
+    await w.instances.ensure(quiet);
+    const application = w.clerk.live()[0]!;
+    assert.equal(w.workspace.readLease('ios'), null);
+    const before = w.clerk.platformRequests().length;
+    const result = await settings(deps(w), { verb: 'settings', prefixes: ['auth_multi_factor', 'restrictions.ignore_dots_for_gmail_addresses'] });
+    assert.deepEqual(result, {
+      verb: 'settings',
+      application: { id: application.id, name: application.name },
+      pending: [],
+      config: {
+        'auth_multi_factor.authenticator_app.enabled': true,
+        'auth_multi_factor.backup_code.enabled': true,
+        'auth_multi_factor.phone_code.enabled': true,
+        'auth_multi_factor.required_for_sign_in': false,
+        'auth_multi_factor.required_for_sign_up': false,
+        'restrictions.ignore_dots_for_gmail_addresses': false,
+      },
+    });
+    assert.deepEqual(sentSince(w, before).filter((call) => call.includes('/config')), [`GET /applications/${application.id}/instances/${application.instanceId}/config?keys=auth_multi_factor&keys=restrictions`]);
+    assert.equal(writes(w).length, 2, 'it reads and changes nothing');
+    assert.equal(Object.keys((await settings(deps(w), { verb: 'settings', prefixes: [] })).config).length, Object.keys(configLeaves(application.config)).length, 'no prefix prints every leaf');
+  });
+
+  it('names the leaves a test changed that are not restored yet', async () => {
+    const w = world();
+    await w.instances.ensure(quiet);
+    await (await w.instances.drive()).useSettings({ config: { 'auth_multi_factor.required_for_sign_up': true } }, null);
+    const result = await settings(deps(w), { verb: 'settings', prefixes: ['auth_multi_factor.required_for_sign_up'] });
+    assert.deepEqual([result.pending, result.config], [['auth_multi_factor.required_for_sign_up'], { 'auth_multi_factor.required_for_sign_up': true }]);
+  });
+
+  it('refuses with up as the fix when the worktree holds no application', async () => {
+    const w = world();
+    await assert.rejects(settings(deps(w), { verb: 'settings', prefixes: [] }), { code: 'NOT_READY', message: 'this worktree holds no application', fix: '{cli} up' });
+    assert.deepEqual(w.clerk.requests, []);
+  });
+});
+
 describe('two runs in one worktree', () => {
   const FIRST = 1000;
   const SECOND = 2000;
 
-  it('refuses a second run while the first still drives, on any settings, and makes no second application', async () => {
+  it('refuses a second run while the first still drives, and makes no second application', async () => {
     const w = world();
     const first = w.open(FIRST);
-    await first.ensure(NOTHING_NEW, quiet);
-    const held = await first.apply(mfaGroup, quiet);
+    await first.ensure(quiet);
+    const held = await first.drive();
     w.alive.add(FIRST);
     const application = w.clerk.live()[0]!;
     const second = w.open(SECOND);
-    await second.ensure({ willChange: true }, quiet);
+    await second.ensure(quiet);
     const before = w.clerk.platformRequests().length;
-    for (const group of [orgGroup, mfaGroup, standardGroup]) {
-      await assert.rejects(
-        second.apply(group, quiet),
-        (error: VerifyFailure) =>
-          error.code === 'DEVICE_BUSY' &&
-          RETRYABLE.has(error.code) &&
-          error.message === `another run in this worktree (pid ${FIRST}) is driving on ${application.id}, and a worktree has one application, which serves one run at a time` &&
-          error.fix === 'let that run finish, then rerun',
-        group.settings.label,
-      );
-    }
+    await assert.rejects(
+      second.drive(),
+      (error: VerifyFailure) =>
+        error.code === 'DEVICE_BUSY' &&
+        RETRYABLE.has(error.code) &&
+        error.message === `another run in this worktree (pid ${FIRST}) is driving on ${application.id}, and a worktree has one application, which serves one run at a time` &&
+        error.fix === 'let that run finish, then rerun',
+    );
     assert.equal(w.clerk.platformRequests().length, before, 'it asked the Platform API for nothing: no second application, no change of settings');
     assert.equal(w.clerk.applications.length, 1);
     assert.deepEqual(stateOf(w, application.name).drivers.map((driver) => driver.pid), [FIRST]);
-    assert.equal(await held.stillApplied(), true, 'the first run still has its settings');
-    assert.throws(() => second.keys(), /no instance is applied/);
+    assert.equal(await held.stillStandard(), true, 'the first run still has the standard settings');
+    assert.throws(() => second.keys(), /no instance is driven/);
 
     await held.release();
-    await assert.rejects(second.apply(orgGroup, quiet), { code: 'DEVICE_BUSY' }, 'between two groups of the first run the application is still its own');
+    await assert.rejects(second.drive(), { code: 'DEVICE_BUSY' }, 'until the first run stops driving, the application is still its own');
     await first.stopDriving();
-    const own = await second.apply(orgGroup, quiet);
+    const own = await second.drive();
     assert.deepEqual(own.instance, { id: application.id, name: application.name }, 'once the first run has ended, the second drives on the same application');
   });
 
   it('takes over the application of a run that died', async () => {
     const w = world();
     const first = w.open(FIRST);
-    await first.ensure(NOTHING_NEW, quiet);
-    await first.apply(mfaGroup, quiet);
+    await first.ensure(quiet);
+    await first.drive();
     const application = w.clerk.live()[0]!;
     assert.deepEqual(stateOf(w, application.name).drivers, [{ pid: FIRST, startedAt: T0 }]);
-    const own = await w.open(SECOND).apply(orgGroup, quiet);
+    const own = await w.open(SECOND).drive();
     assert.deepEqual(own.instance, { id: application.id, name: application.name });
     assert.equal(w.clerk.applications.length, 1);
     assert.deepEqual(stateOf(w, application.name).drivers.map((driver) => driver.pid), [SECOND], 'a dead driver counts as nobody');
@@ -1011,13 +1186,13 @@ describe('two runs in one worktree', () => {
 
   it('keeps driving on the application it checked when it started, though its deadline comes within the hour meanwhile', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     w.clock.at = T0 + 6 * HOUR - 20 * 60_000;
-    for (const group of [mfaGroup, mfaGroup, orgGroup]) await (await w.instances.apply(group, quiet)).release();
+    for (let run = 0; run < 3; run += 1) await (await w.instances.drive()).release();
     assert.equal(w.clerk.applications.length, 1, 'a run that started with more than an hour left ends before a reap can come');
   });
 
-  it('waits for the lock another command in the worktree holds before it ensures, applies, or stops driving', async () => {
+  it('waits for the lock another command in the worktree holds before it ensures, drives, or stops driving', async () => {
     const w = world();
     mkdirSync(join(w.workspace.root, 'locks'), { recursive: true });
     const whileLocked = async <T>(what: string, start: () => Promise<T>, untouched: () => void): Promise<T> => {
@@ -1032,11 +1207,10 @@ describe('two runs in one worktree', () => {
       return pending;
     };
 
-    await whileLocked('ensure', () => w.instances.ensure(NOTHING_NEW, quiet), () => assert.deepEqual(w.clerk.requests, []));
+    await whileLocked('ensure', () => w.instances.ensure(quiet), () => assert.deepEqual(w.clerk.requests, []));
     const application = w.clerk.live()[0]!;
-    const applied = await whileLocked('apply', () => w.instances.apply(mfaGroup, quiet), () => assert.equal(patches(w).length, 1, 'only the PATCH that put it on the standard file'));
-    assert.equal(application.environment['user_settings.sign_up.mfa.required'], true);
-    await applied.release();
+    const driven = await whileLocked('drive', () => w.instances.drive(), () => assert.deepEqual(stateOf(w, application.name).drivers, []));
+    await driven.release();
     await whileLocked('stopDriving', () => w.instances.stopDriving(), () => assert.deepEqual(stateOf(w, application.name).drivers.map((driver) => driver.pid), [1000]));
     assert.deepEqual(stateOf(w, application.name).drivers, []);
   });
@@ -1044,182 +1218,27 @@ describe('two runs in one worktree', () => {
   it('leaves an application another run is driving completely alone before a run', async () => {
     const w = world();
     const first = w.open(FIRST);
-    await first.ensure(NOTHING_NEW, quiet);
-    await first.apply(mfaGroup, quiet);
+    await first.ensure(quiet);
+    await first.drive();
     w.alive.add(FIRST);
     const application = w.clerk.live()[0]!;
     application.users = 99;
     application.environment['user_settings.sign_up.mfa.required'] = false;
     w.clock.at = T0 + 8 * HOUR;
     const before = writes(w).length;
-    const up = await w.open(SECOND).ensure({ willChange: true }, w.say);
+    const up = await w.open(SECOND).ensure(w.say);
     assert.deepEqual(writes(w).slice(before), [], 'not retired near its deadline or its user limit, not repaired, not reaped, not changed');
-    assert.deepEqual(up.map((view) => [idOf(view), view.settings]), [[application.id, MFA_LABEL]]);
+    assert.deepEqual(up.map((view) => [idOf(view), view.settings]), [[application.id, 'standard']]);
     assert.equal(application.deleted, false);
   });
-});
-
-describe('a declaration Clerk or the instance does not take', () => {
-  const ready = async () => {
-    const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
-    return { w, application: w.clerk.live()[0]! };
-  };
-
-  it('names the key Clerk refused and the spec that declared it, and leaves the application as it was', async () => {
-    const { w, application } = await ready();
-    w.clerk.state.refusals.push({ path: 'auth_multi_factor.required_for_sign_up', value: true, status: 400, code: 'unknown_config_key', param: 'auth_multi_factor.required_for_sign_up', message: 'is not a config key' });
-    await assert.rejects(
-      w.instances.apply(mfaGroup, quiet),
-      (error: SettingsRefused) =>
-        error instanceof SettingsRefused &&
-        error.code === 'INSTANCE_MISCONFIGURED' &&
-        error.message === `${MFA_SPEC} declares ${MFA_LABEL}, and Clerk's Platform API refused it: auth_multi_factor.required_for_sign_up (400 unknown_config_key): is not a config key` &&
-        error.fix === `correct or remove \`auth_multi_factor.required_for_sign_up\` in \`config\` in ${MFA_FILE}: Clerk says what is wrong with it above.`,
-    );
-    assert.deepEqual(writes(w).slice(-2), [`PATCH /applications/${application.id}/config`, `PATCH /applications/${application.id}/config?dry_run=true`], 'one dry run of the standard file alone, to see whose fault it is');
-    assert.equal(w.instances.recordedKey(), STANDARD.key, 'a refused PATCH applied nothing, so the record stands');
-    const before = patches(w).length;
-    await (await w.instances.apply(standardGroup, w.say)).release();
-    assert.equal(patches(w).length, before, 'and the next group finds its settings without a PATCH');
-    assert.throws(() => w.open().keys(), /no instance is applied/);
-  });
-
-  it('says to add what Clerk named when the declaration does not set it, and to correct it when the declaration sets it by its last segment', async () => {
-    const { w } = await ready();
-    const consent: InstanceSettings = { config: { compliance: { legal_consent: { enabled: true } } }, environment: { 'user_settings.sign_up.legal_consent_enabled': true } };
-    w.clerk.state.refusals.push({ path: 'compliance.legal_consent.enabled', value: true, status: 422, code: 'form_param_missing', param: ['terms_of_service_url', 'privacy_policy_url'], message: 'is required' });
-    await assert.rejects(
-      w.instances.apply(groupOf(consent, MFA_SPEC), quiet),
-      (error: SettingsRefused) =>
-        error instanceof SettingsRefused &&
-        error.message === `${MFA_SPEC} declares compliance.legal_consent.enabled=true, and Clerk's Platform API refused it: terms_of_service_url (422 form_param_missing): is required` &&
-        error.fix === `add \`terms_of_service_url\` to \`config\` in ${MFA_FILE} (Clerk requires it with what the spec declares), or remove what requires it.`,
-    );
-    w.clerk.state.refusals.push({ path: 'auth_multi_factor.required_for_sign_up', value: true, status: 422, code: 'form_param_value_invalid', param: 'required_for_sign_up', message: 'is not allowed' });
-    await assert.rejects(w.instances.apply(mfaGroup, quiet), (error: SettingsRefused) => error instanceof SettingsRefused && error.fix.startsWith(`correct or remove \`required_for_sign_up\` in \`config\` in ${MFA_FILE}: Clerk says what is wrong with it above.`));
-  });
-
-  it('names every declared leaf when Clerk names no key', async () => {
-    const { w } = await ready();
-    const both: InstanceSettings = { config: { auth_multi_factor: { required_for_sign_up: true }, auth_attack_protection: { pii_protection_enabled: false } }, environment: MFA.environment };
-    w.clerk.state.refusals.push({ path: 'auth_attack_protection.pii_protection_enabled', value: false, status: 409, code: 'user_settings_invalid', message: 'the settings are not valid together' });
-    await assert.rejects(w.instances.apply(groupOf(both, MFA_SPEC), quiet), (error: SettingsRefused) => error instanceof SettingsRefused && error.message.endsWith('refused it: 409 user_settings_invalid: the settings are not valid together') && error.fix === `Clerk refused these together; remove or correct one of auth_multi_factor.required_for_sign_up, auth_attack_protection.pii_protection_enabled in \`config\` in ${MFA_FILE}.`);
-  });
-
-  it('blames the standard file, not the spec, when Clerk refuses the standard file alone too', async () => {
-    const { w } = await ready();
-    w.clerk.state.refusals.push({ path: 'auth_password.min_length', status: 400, code: 'config_key_body_invalid', param: 'auth_password.min_length', message: 'must be at least 10' });
-    await assert.rejects(
-      w.instances.apply(mfaGroup, quiet),
-      (error: VerifyFailure) =>
-        !(error instanceof SettingsRefused) &&
-        error.code === 'INSTANCE_MISCONFIGURED' &&
-        error.message === `Clerk's Platform API refused the standard settings in ${STANDARD_FILE}: auth_password.min_length (400 config_key_body_invalid): must be at least 10` &&
-        error.fix === 'the standard file needs a change of its own; the spec is not at fault',
-    );
-    const fresh = world();
-    fresh.clerk.state.refusals.push({ path: 'auth_password.min_length', status: 400, code: 'config_key_body_invalid', param: 'auth_password.min_length', message: 'must be at least 10' });
-    await assert.rejects(fresh.instances.ensure(NOTHING_NEW, quiet), (error: VerifyFailure) => !(error instanceof SettingsRefused) && error.message.startsWith(`Clerk's Platform API refused the standard settings in ${STANDARD_FILE}`));
-    assert.equal(writes(fresh).some((call) => call.includes('dry_run')), false, 'the standard file was the body, so no second request is needed');
-  });
-
-  it('fails a change that moved a required setting the declaration does not list as soon as two reads agree, and lists it ready to paste', async () => {
-    const { w, application } = await ready();
-    w.clerk.state.alsoMoves = { 'auth_config.test_mode': false, 'user_settings.sign_up.captcha_enabled': true };
-    w.slept.length = 0;
-    await assert.rejects(
-      w.instances.apply(mfaGroup, quiet),
-      (error: SettingsRefused) =>
-        error instanceof SettingsRefused &&
-        error.message === `${MFA_SPEC} declares ${MFA_LABEL}, and 0.5s after Clerk accepted it on ${application.id} the change moved 2 settings the declaration does not list: "auth_config.test_mode": false, "user_settings.sign_up.captcha_enabled": true` &&
-        error.fix === `one setting can move several leaves: add them to \`environment\` in ${MFA_FILE}, as listed`,
-    );
-    assert.deepEqual(w.slept, [500], 'the second read showed the same as the first, so it did not wait out the 15s');
-    assert.equal(w.instances.recordedKey(), null, 'the application is on settings nobody declared, so the next use sends its own');
-    w.clerk.state.alsoMoves = {};
-    application.environment['auth_config.test_mode'] = true;
-    application.environment['user_settings.sign_up.captcha_enabled'] = false;
-    const both: InstanceSettings = { config: MFA.config, environment: { ...MFA.environment } };
-    await (await w.instances.apply(groupOf(both, MFA_SPEC), quiet)).release();
-  });
-
-  it('keeps waiting while a declared leaf does not show, and stops only when two reads in a row show the same rest', async () => {
-    const { w, application } = await ready();
-    w.clerk.state.ignoreConfigKey = 'user_settings.sign_up.mfa.required';
-    w.clerk.state.alsoMoves = { 'auth_config.test_mode': false, 'user_settings.sign_up.captcha_enabled': true };
-    let reads = 0;
-    let patched = false;
-    const slow: typeof fetch = async (input, init) => {
-      patched ||= init?.method === 'PATCH';
-      if (patched && String(input).endsWith('/v1/environment')) {
-        reads += 1;
-        if (reads === 3) application.environment['user_settings.sign_up.mfa.required'] = true;
-        if (reads === 4) application.environment['user_settings.sign_up.captcha_enabled'] = false;
-      }
-      return w.clerk.fetch(input, init);
-    };
-    w.slept.length = 0;
-    await assert.rejects(
-      w.open(1000, slow).apply(mfaGroup, quiet),
-      (error: SettingsRefused) => error instanceof SettingsRefused && error.message === `${MFA_SPEC} declares ${MFA_LABEL}, and 2.0s after Clerk accepted it on ${application.id} the change moved 1 setting the declaration does not list: "auth_config.test_mode": false`,
-    );
-    assert.equal(reads, 5, 'two reads without the declared leaf, one with it, one where the rest changed, and one that agreed with it');
-    assert.deepEqual(w.slept, [500, 500, 500, 500]);
-  });
-
-  it('fails a change whose declared leaf never shows after the full wait, naming what the instance shows instead', async () => {
-    const { w, application } = await ready();
-    w.clerk.state.ignoreConfigKey = 'user_settings.sign_up.mfa.required';
-    w.slept.length = 0;
-    await assert.rejects(
-      w.instances.apply(mfaGroup, quiet),
-      (error: SettingsRefused) => error instanceof SettingsRefused && error.message === `${MFA_SPEC} declares ${MFA_LABEL}, and 15.0s after Clerk accepted it on ${application.id} it does not show user_settings.sign_up.mfa.required is false, and the declaration expects true` && error.fix.includes(`\`environment\` in ${MFA_FILE}`),
-    );
-    assert.equal(w.slept.reduce((sum, ms) => sum + ms, 0), 15_000, 'identical reads that lack a declared leaf are not an answer yet');
-  });
-
-  it('says that the instance has no such leaf when a declared leaf is misspelt, and gives a fix for it and for the leaf the change did move', async () => {
-    const { w, application } = await ready();
-    const misspelt: InstanceSettings = { config: MFA.config, environment: { 'user_settings.sign_up.mfa.requird': true } };
-    await assert.rejects(
-      w.instances.apply(groupOf(misspelt, MFA_SPEC), quiet),
-      (error: SettingsRefused) =>
-        error instanceof SettingsRefused &&
-        error.message === `${MFA_SPEC} declares ${MFA_LABEL}, and 15.0s after Clerk accepted it on ${application.id} its public environment has no leaf user_settings.sign_up.mfa.requird; and the change moved 1 setting the declaration does not list: "user_settings.sign_up.mfa.required": true` &&
-        error.fix === `check the spelling of user_settings.sign_up.mfa.requird under \`environment\` in ${MFA_FILE}; one setting can move several leaves: add them to \`environment\` in ${MFA_FILE}, as listed`,
-    );
-  });
-
-  it('fails when Clerk accepts a change and its answer does not hold it', async () => {
-    const { w } = await ready();
-    w.clerk.state.dropFromAfter = 'auth_multi_factor.required_for_sign_up';
-    await assert.rejects(w.instances.apply(mfaGroup, quiet), (error: VerifyFailure) => error.code === 'INSTANCE_MISCONFIGURED' && !(error instanceof SettingsRefused) && error.message.includes('its answer does not hold auth_multi_factor.required_for_sign_up=true (it has no such key)'));
-  });
-
-  it('blames the declaration when Clerk accepts a declared value and stores another, and the tool when it is a value no declaration set', async () => {
-    const { w } = await ready();
-    const long: InstanceSettings = { config: { auth_password: { min_length: 200 } }, environment: { 'user_settings.password_settings.min_length': 200 } };
-    w.clerk.state.storesInstead = { 'auth_password.min_length': 72 };
-    await assert.rejects(
-      w.instances.apply(groupOf(long, MFA_SPEC), quiet),
-      (error: SettingsRefused) =>
-        error instanceof SettingsRefused &&
-        error.message === `${MFA_SPEC} declares auth_password.min_length=200, and Clerk stored 72` &&
-        error.fix === `correct \`auth_password.min_length\` in \`config\` in ${MFA_FILE} to a value Clerk keeps`,
-    );
-    assert.equal(w.instances.recordedKey(), null, 'the application is on a value nobody declared, so the next use sends its own settings');
-    await assert.rejects(w.instances.apply(mfaGroup, quiet), (error: VerifyFailure) => error.code === 'INSTANCE_MISCONFIGURED' && !(error instanceof SettingsRefused) && error.message.includes('its answer does not hold auth_password.min_length=8 (it has 72)'));
-  });
-
 });
 
 describe('finishing a ledger', () => {
   it('deletes every application, confirms each is absent from the list, and is safe to repeat', async () => {
     const w = world();
-    heldWithoutState(w, 'aaaaaaaa');
-    const killed = heldWithoutState(w, 'bbbbbbbb');
-    await w.open().ensure(NOTHING_NEW, quiet);
+    heldOnStandard(w, 'aaaaaaaa');
+    const killed = heldOnStandard(w, 'bbbbbbbb');
+    await w.open().ensure(quiet);
     writeFileSync(join(instancesDir(w), `${killed.name}.state.json.0a1b2c3d.tmp`), '{}');
     const finished = await w.open().finish(w.workspace, { keepApplications: false }, w.say);
     assert.equal(finished.length, 2);
@@ -1236,7 +1255,7 @@ describe('finishing a ledger', () => {
 
   it('keeps the ledger entries when Clerk still lists the application', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     w.clerk.state.refuseDelete = true;
     await assert.rejects(w.open().finish(w.workspace, { keepApplications: false }, quiet), (error: VerifyFailure) => /could not be deleted/.test(error.message) && error.fix.includes('down again'));
     assert.equal(openApplications(w.workspace).length, 1);
@@ -1247,7 +1266,7 @@ describe('finishing a ledger', () => {
 
   it('closes the identities that lived in an application with no Backend API call', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     const run = newRunId();
     w.workspace.append({ id: newEntryId(), kind: 'user', run, userId: 'user_1', email: testEmail(run, 'maya') });
 
@@ -1271,7 +1290,7 @@ describe('finishing a ledger', () => {
 
   it('removes the files of an application before it closes the entry, so the next up finishes a kill between the two', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     const { name } = w.clerk.live()[0]!;
     const append = w.workspace.append;
     w.workspace.append = (entry) => {
@@ -1282,14 +1301,14 @@ describe('finishing a ledger', () => {
     w.workspace.append = append;
     assert.deepEqual(readdirSync(instancesDir(w)), [], 'the record is gone, though the entry is still open');
     assert.deepEqual(openApplications(w.workspace).map((entry) => entry.name), [name]);
-    await w.open().ensure(NOTHING_NEW, w.say);
+    await w.open().ensure(w.say);
     assert.ok(w.lines.includes(`instance ${name} retired (its keys are lost)`));
     assert.equal(openApplications(w.workspace).some((entry) => entry.name === name), false);
   });
 
   it('still sends the delete when the list does not show an application it has the id for', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     let hidden = true;
     const hiding = (async (input: string | URL, init?: RequestInit) => (hidden && (init?.method ?? 'GET') === 'GET' && String(input).endsWith('/platform/applications') ? new Response('[]', { status: 200 }) : w.clerk.fetch(input, init))) as typeof fetch;
     await w.open(1000, hiding).finish(w.workspace, { keepApplications: false }, quiet);
@@ -1300,7 +1319,7 @@ describe('finishing a ledger', () => {
   it('finishes the ledger of a worktree that is gone', async () => {
     const home = mkdtempSync(join(tmpdir(), 'verify-instances-home-'));
     const gone = world({ home });
-    await gone.instances.ensure(NOTHING_NEW, quiet);
+    await gone.instances.ensure(quiet);
     rmSync(gone.dir, { recursive: true, force: true });
     const here = world({ home, shared: gone.clerk });
     await finishOrphanLedgers(home, here.dir, here.instances, here.say);
@@ -1312,7 +1331,7 @@ describe('finishing a ledger', () => {
 
   it('leaves the applications alone when asked to keep them, and still closes their identities', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     const run = newRunId();
     w.workspace.append({ id: newEntryId(), kind: 'user', run, userId: 'user_1', email: testEmail(run, 'maya') });
     await w.open().finish(w.workspace, { keepApplications: true }, quiet);
@@ -1328,7 +1347,7 @@ describe('reaping', () => {
     const expired = Array.from({ length: 7 }, (_, n) => w.clerk.plant(throwawayName(new Date(T0 - HOUR), `0000000${n}`)));
     const fresh = w.clerk.plant(throwawayName(new Date(T0 + HOUR), 'ffffffff'));
     const justPast = w.clerk.plant(throwawayName(new Date(T0 - 60_000), 'eeeeeeee'));
-    await w.instances.ensure(NOTHING_NEW, w.say);
+    await w.instances.ensure(w.say);
     assert.equal(expired.filter((a) => a.deleted).length, 5);
     assert.equal(fresh.deleted, false, 'another session\'s live instance');
     assert.equal(justPast.deleted, false, 'inside the grace after its deadline');
@@ -1338,11 +1357,11 @@ describe('reaping', () => {
 
   it('does not reap the application it has just retired, or spend one of its five reaps on it', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     const retired = w.clerk.live()[0]!;
     const expired = Array.from({ length: 5 }, (_, n) => w.clerk.plant(throwawayName(new Date(T0 + HOUR), `0000000${n}`)));
     w.clock.at = T0 + 7 * HOUR;
-    await w.open().ensure(NOTHING_NEW, w.say);
+    await w.open().ensure(w.say);
     assert.ok(w.lines.includes(`instance ${retired.id} retired (its deadline is near)`));
     assert.equal(w.clerk.platformRequests().filter((request) => request.method === 'DELETE' && request.url.endsWith(`/${retired.id}`)).length, 1, 'one delete for the retired application');
     assert.deepEqual(expired.map((application) => application.deleted), [true, true, true, true, true], 'and all five reaps for the applications other sessions left');
@@ -1355,7 +1374,7 @@ describe('reaping', () => {
     const other = clerk.plant(throwawayName(new Date(T0 + HOUR), 'aaaaaaaa'));
     const fastClock = T0 + 5 * HOUR;
     const instances = createInstances({ workspace: openWorkspace({ packageDir: dir, worktree: dir, home: join(dir, 'home') }), env: { CLERK_PLATFORM_API_KEY: PLATFORM_KEY }, runner: noOp, progress: quiet, fetch: clerk.fetch, now: () => fastClock });
-    await instances.ensure(NOTHING_NEW, quiet);
+    await instances.ensure(quiet);
     assert.equal(other.deleted, false);
   });
 
@@ -1363,7 +1382,7 @@ describe('reaping', () => {
     const w = world();
     const expired = w.clerk.plant(throwawayName(new Date(T0 - 10 * HOUR), 'aaaaaaaa'));
     w.clerk.state.noDate = true;
-    await w.instances.ensure(NOTHING_NEW, w.say);
+    await w.instances.ensure(w.say);
     assert.equal(expired.deleted, false);
   });
 
@@ -1371,7 +1390,7 @@ describe('reaping', () => {
     const w = world();
     w.clerk.plant(throwawayName(new Date(T0 - HOUR), 'bbbbbbbb'));
     const refusing = (async (input: string | URL, init?: RequestInit) => (init?.method === 'DELETE' ? new Response(JSON.stringify({ errors: [{ code: 'internal' }] }), { status: 500 }) : w.clerk.fetch(input, init))) as typeof fetch;
-    await w.open(1000, refusing).ensure(NOTHING_NEW, w.say);
+    await w.open(1000, refusing).ensure(w.say);
     assert.ok(w.lines.some((line) => line.includes('left in place')));
   });
 });
@@ -1406,7 +1425,7 @@ describe('the Backend API', () => {
 
   it('brings no instance up in a sandbox whose credential replaces the instance key on api.clerk.com, says why in up and in doctor, and can still delete it', async () => {
     const w = world({ env: {}, clerk: { attachesKey: true, replacesAuthorizationOnCom: true } });
-    await assert.rejects(w.instances.ensure(NOTHING_NEW, w.say), keyRefused);
+    await assert.rejects(w.instances.ensure(w.say), keyRefused);
     assert.ok(w.lines.some((line) => line.startsWith('instances a key attached outside this machine (no key is in this process) reaches')));
     const check = (await w.open().doctorChecks({ live: false }, quiet)).find((c) => c.id === 'clerk-api')!;
     assert.deepEqual([check.ok, keyRefused(new VerifyFailure('NOT_READY', check.detail, check.fix ?? ''))], [false, true]);
@@ -1418,10 +1437,6 @@ describe('the Backend API', () => {
 });
 
 describe('doctor', () => {
-  const specFile = (w: World, path: string, source: string) => {
-    mkdirSync(join(w.dir, path, '..'), { recursive: true });
-    writeFileSync(join(w.dir, path), source);
-  };
   const settingsCheck = async (w: World) => (await w.open().doctorChecks({ live: false }, quiet)).find((c) => c.id === 'settings')!;
 
   it('says which credential reaches which workspace and creates nothing', async () => {
@@ -1430,7 +1445,7 @@ describe('doctor', () => {
     assert.deepEqual(checks.map((c) => [c.id, c.ok]), [['instances', true], ['clerk-api', true], ['settings', true]]);
     assert.match(checks[0]!.detail, /^CLERK_PLATFORM_API_KEY reaches the verification workspace org_3KHungJxbvIscuSvy8oos5MHAli; none created yet$/);
     assert.match(checks[1]!.detail, /^not observed yet/);
-    assert.equal(checks[2]!.detail, `none created yet; up creates one application from ${STANDARD_FILE}; 0 spec files declare settings`);
+    assert.equal(checks[2]!.detail, `none created yet; up creates one application from ${STANDARD_FILE}`);
     assert.deepEqual(platformCalls(w), ['GET /me', 'GET /applications']);
   });
 
@@ -1454,7 +1469,7 @@ describe('doctor', () => {
 
   it('still reads a held application when the key lacks a scope, and says which', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     w.clerk.state.scopes = PLATFORM_SCOPES.filter((scope) => scope !== 'applications:delete');
     const checks = await w.open().doctorChecks({ live: false }, quiet);
     assert.deepEqual(checks.map((c) => [c.id, c.ok]), [['instances', false], ['clerk-api', true], ['settings', true]]);
@@ -1462,30 +1477,21 @@ describe('doctor', () => {
     assert.equal(checks[0]!.fix, 'add applications:delete to the Platform API key');
   });
 
-  it('names what a held application is on, which spec asked, and how many settings it compared', async () => {
+  it('names what a held application is on, and how many settings it compared', async () => {
     const w = world();
-    specFile(w, MFA_SPEC, "test('x', () => {});\n");
-    specFile(w, MFA_FILE, JSON.stringify(MFA));
-    specFile(w, STANDARD_SPEC, "test('x', () => {});\n");
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     const application = w.clerk.live()[0]!;
     application.environment['auth_config.reverification'] = false;
     const standard = await w.open().doctorChecks({ live: false }, quiet);
     assert.match(standard[0]!.detail, new RegExp(`^CLERK_PLATFORM_API_KEY reaches the verification workspace ${WORKSPACE}; ${application.id} \\(${application.name}\\) on standard$`));
     assert.equal(standard[1]!.detail, `api.clerk.com accepts the own key of ${application.id}`);
     assert.deepEqual([standard[2]!.id, standard[2]!.ok], ['settings', true]);
-    assert.equal(standard[2]!.detail, `${application.id} is on standard; ${LEAVES} settings match ${STANDARD_FILE}; 1 spec file declares settings`, 'a setting the file does not require is not reported');
-
-    await (await w.open().apply(mfaGroup, quiet)).release();
-    const declared = await settingsCheck(w);
-    assert.equal(declared.ok, true);
-    assert.ok(declared.detail.startsWith(`${application.id} is on ${MFA_LABEL}, which ${MFA_SPEC} asked for; ${LEAVES} settings match ${STANDARD_FILE} with that declaration; `), declared.detail);
-    assert.ok((await w.open().doctorChecks({ live: false }, quiet))[0]!.detail.endsWith(` on ${MFA_LABEL}`));
+    assert.equal(standard[2]!.detail, `${application.id} is on standard; ${LEAVES} settings match ${STANDARD_FILE}`, 'a setting the file does not require is not reported');
   });
 
   it('fails when a held application no longer shows its recorded settings, or has none recorded', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     const application = w.clerk.live()[0]!;
     application.environment['auth_config.test_mode'] = false;
     const differing = await settingsCheck(w);
@@ -1495,34 +1501,26 @@ describe('doctor', () => {
     application.environment['auth_config.test_mode'] = true;
     rmSync(join(instancesDir(w), `${application.name}.state.json`));
     const unknown = await settingsCheck(w);
-    assert.deepEqual([unknown.ok, unknown.detail.split(';')[0]], [false, `${application.id} has no settings recorded`]);
+    assert.deepEqual([unknown.ok, unknown.detail.split(';')[0], unknown.fix], [false, `${application.id} has no settings recorded`, '{cli} up replaces it']);
     application.deleted = true;
     assert.match((await settingsCheck(w)).detail, new RegExp(`^Clerk no longer serves ${application.id}`));
   });
 
-  it('fails on the first spec file whose declaration a run would refuse, and names it', async () => {
+
+  it('fails while a change a test made is not restored, and names its leaves', async () => {
     const w = world();
-    specFile(w, STANDARD_SPEC, "test('x', () => {});\n");
-    specFile(w, 'specs/explored/a-stray.settings.json', JSON.stringify(MFA));
-    specFile(w, 'specs/explored/c-malformed.e2e.ts', "test('x', () => {});\n");
-    specFile(w, 'specs/explored/c-malformed.settings.json', "{ config: { auth_multi_factor: { required_for_sign_up: true } } }");
-    specFile(w, 'specs/explored/d-unknown.e2e.ts', "test('x', () => {});\n");
-    specFile(w, 'specs/explored/d-unknown.settings.json', JSON.stringify({ config: { auth_email: { nope: true } }, environment: MFA.environment }));
-    const stray = await settingsCheck(w);
-    assert.equal(stray.ok, false);
-    assert.match(stray.detail, /; specs\/explored\/a-stray\.settings\.json is not the settings file of a spec, so no run reads it$/);
-    rmSync(join(w.dir, 'specs/explored/a-stray.settings.json'));
-    const malformed = await settingsCheck(w);
-    assert.equal(malformed.ok, false);
-    assert.match(malformed.detail, /; specs\/explored\/c-malformed\.settings\.json: it is not JSON \(/);
-    assert.match(malformed.fix ?? '', /^write the settings of specs\/explored\/c-malformed\.e2e\.ts as one JSON object, as in `\{ "config": /);
-    rmSync(join(w.dir, 'specs/explored/c-malformed.settings.json'));
-    assert.match((await settingsCheck(w)).detail, /specs\/explored\/d-unknown\.e2e\.ts declares auth_email\.nope, and the standard file has no value to return it to$/);
+    await w.instances.ensure(quiet);
+    const driving = await w.instances.drive();
+    await driving.useSettings({ config: { 'auth_multi_factor.required_for_sign_up': true } }, null);
+    const pending = await settingsCheck(w);
+    assert.deepEqual([pending.ok, pending.detail, pending.fix], [false, `${w.clerk.live()[0]!.id} has 1 leaf a test changed, not restored: auth_multi_factor.required_for_sign_up`, '{cli} up restores them']);
+    await driving.restore();
+    assert.equal((await settingsCheck(w)).ok, true);
   });
 
   it('says so when instances are held and the credential that down needs is gone', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     const later = createInstances({ workspace: w.workspace, env: {}, runner: noOp, progress: quiet, fetch: w.clerk.fetch });
     const checks = await later.doctorChecks({ live: true }, quiet);
     assert.equal(checks[0]!.ok, false);
@@ -1533,7 +1531,7 @@ describe('doctor', () => {
 
   it('--live leaves an application this worktree already holds alone', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     const checks = await w.open().doctorChecks({ live: true }, quiet);
     const live = checks.find((c) => c.id === 'live-instance')!;
     assert.deepEqual([live.ok, live.state], [true, 'not-run']);
@@ -1571,18 +1569,18 @@ describe('doctor', () => {
 
 describe('the broker of a run', () => {
 
-  it('creates a user only while an instance is applied, with that application\'s own key, and ledgers it', async () => {
+  it('creates a user only while an instance is driven, with that application\'s own key, and ledgers it', async () => {
     const w = world();
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     const { run, scratch } = w.workspace.newRun();
-    const broker = await startBroker(run, w.workspace, scratch as ScratchPath, { keys: () => w.instances.keys(), fetch: w.clerk.fetch, beforeLaunch: async () => undefined });
+    const broker = await startBroker(run, w.workspace, scratch as ScratchPath, { keys: () => w.instances.keys(), fetch: w.clerk.fetch, beforeLaunch: async () => undefined, settings: NO_SETTINGS });
     const create = async () => {
       const response = await fetch(`${broker.url}/users`, { method: 'POST', headers: { Authorization: `Bearer ${readFileSync(broker.tokenFile, 'utf8')}` }, body: JSON.stringify({ email_address: [testEmail(run, 'maya')], skip_password_requirement: true }) });
       return { status: response.status, json: (await response.json()) as Record<string, unknown> };
     };
     try {
-      assert.equal((await create()).status, 502, 'nothing is applied before the run drives, so there is no key to forward with');
-      const applied = await w.instances.apply(mfaGroup, quiet);
+      assert.equal((await create()).status, 502, 'nothing is driven before the run starts, so there is no key to forward with');
+      const applied = await w.instances.drive();
       const created = await create();
       assert.equal(created.status, 200);
       const ticket = await fetch(`${broker.url}/sign_in_tokens`, { method: 'POST', headers: { Authorization: `Bearer ${readFileSync(broker.tokenFile, 'utf8')}` }, body: JSON.stringify({ user_id: created.json.id, expires_in_seconds: 120 }) });
@@ -1592,7 +1590,7 @@ describe('the broker of a run', () => {
       await broker.stop();
     }
     const application = w.clerk.live()[0]!;
-    assert.equal(application.users, 1, 'the user was made with the applied application\'s own key');
+    assert.equal(application.users, 1, 'the user was made with the driven application\'s own key');
     assert.deepEqual(w.workspace.unclosedEntries().flatMap((entry) => (entry.kind === 'user' ? [entry.run] : [])), [run], 'the create that was refused left no entry');
   });
 
@@ -1609,7 +1607,7 @@ describe('down with throwaway instances', () => {
 
   it('deletes the applications and reports them', async () => {
     const { w, deps } = setup(['ios']);
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     const name = w.clerk.live()[0]!.name;
     const before = w.clerk.requests.length;
     const dry = await down(deps(), { verb: 'down', stale: false, dryRun: true });
@@ -1624,7 +1622,7 @@ describe('down with throwaway instances', () => {
 
   it('keeps them while another platform in the worktree still holds a lease', async () => {
     const { w, deps } = setup(['ios', 'android']);
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     const first = await down(deps(), { verb: 'down', platform: 'ios', stale: false, dryRun: false });
     assert.ok(!first.dryRun);
     assert.deepEqual(first.deletedApplications, []);
@@ -1638,7 +1636,7 @@ describe('down with throwaway instances', () => {
 
   it('deletes the applications even when the device would not release', async () => {
     const { w, deps } = setup(['ios']);
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     const stuck = deps();
     const failing = { ...stuck, host: { ...stuck.host, backends: stuck.host.backends.map((backend) => ({ ...backend, release: async () => assert.fail('the simulator would not shut down') })) } as unknown as HostAdapter };
     await assert.rejects(down(failing, { verb: 'down', stale: false, dryRun: false }), /would not shut down/);
@@ -1647,7 +1645,7 @@ describe('down with throwaway instances', () => {
 
   it('still releases the device and reports the failure when the applications cannot be deleted', async () => {
     const { w, deps } = setup(['ios']);
-    await w.instances.ensure(NOTHING_NEW, quiet);
+    await w.instances.ensure(quiet);
     w.clerk.state.refuseDelete = true;
     await assert.rejects(down(deps(), { verb: 'down', stale: false, dryRun: false }), /could not be deleted/);
     assert.equal(w.workspace.readLease('ios'), null, 'the lease was released first');

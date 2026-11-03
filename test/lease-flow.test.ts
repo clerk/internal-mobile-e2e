@@ -154,7 +154,7 @@ describe('lease flow', () => {
     const { deps, events } = setup(0);
     const usage = (error: VerifyFailure) => error.code === 'USAGE' && error.message === '--runner names a CI runner and the local backend has none' && error.fix === 'drop --runner, or pass --backend remote';
     await assert.rejects(up(deps, { verb: 'up', runner: 'some-label', waitSeconds: 0 }), usage);
-    await assert.rejects(leaseForRun(deps, 'ios', { ...runCommand, runner: 'some-label' }, { willChange: false }, async () => undefined), usage);
+    await assert.rejects(leaseForRun(deps, 'ios', { ...runCommand, runner: 'some-label' }, async () => undefined), usage);
     await assert.rejects(doctor(deps, { verb: 'doctor', runner: 'some-label', live: true }), usage);
     assert.deepEqual(events, []);
     assert.equal(existsSync(deps.workspace.root), false);
@@ -185,7 +185,7 @@ describe('lease flow', () => {
     const building = up(deps, { verb: 'up', waitSeconds: 0 });
     await until(() => events.includes('build'), 'up to start building');
     progress.length = 0;
-    const device = await leaseForRun(deps, 'ios', runCommand, { willChange: false }, async (outcome) => outcome.lease.backend === 'local' && outcome.lease.deviceName);
+    const device = await leaseForRun(deps, 'ios', runCommand, async (outcome) => outcome.lease.backend === 'local' && outcome.lease.deviceName);
     await building;
     assert.equal(device, 'verify-ios-1');
     assert.equal(progress.filter((l) => l.startsWith('wait')).length, 1, 'one wait line while up holds the lock');
@@ -195,19 +195,19 @@ describe('lease flow', () => {
 
   it('holds the device lock for the run, so a second run reports DEVICE_BUSY', async () => {
     const { deps } = setup(0);
-    await leaseForRun(deps, 'ios', runCommand, { willChange: false }, async () => {
-      await assert.rejects(leaseForRun(deps, 'ios', runCommand, { willChange: false }, async () => undefined), (error: VerifyFailure) => {
+    await leaseForRun(deps, 'ios', runCommand, async () => {
+      await assert.rejects(leaseForRun(deps, 'ios', runCommand, async () => undefined), (error: VerifyFailure) => {
         assert.equal(error.code, 'DEVICE_BUSY');
         assert.match(error.fix, /\{cli\} run --all --wait <seconds>/, 'the fix names run, the verb that takes --wait');
         return true;
       });
     });
-    await leaseForRun(deps, 'ios', runCommand, { willChange: false }, async () => undefined);
+    await leaseForRun(deps, 'ios', runCommand, async () => undefined);
   });
 
   it('passes run --wait to the lane claim', async () => {
     const { deps, events } = setup(0);
-    await leaseForRun(deps, 'ios', { ...runCommand, waitSeconds: 300 }, { willChange: false }, async () => undefined);
+    await leaseForRun(deps, 'ios', { ...runCommand, waitSeconds: 300 }, async () => undefined);
     assert.ok(events.includes('acquire wait=300'));
   });
 
@@ -217,7 +217,7 @@ describe('lease flow', () => {
     const { deps, progress } = setup(0, async (_lease, say) => (say('metro   starting'), { devServer, processes: [metro] }));
     await up(deps, { verb: 'up', waitSeconds: 0 });
     assert.ok(progress.includes('metro   starting'), 'what a runtime reports goes through the CLI\'s own progress output');
-    assert.equal(await leaseForRun(deps, 'ios', runCommand, { willChange: false }, async (outcome) => outcome.devServer), devServer);
+    assert.equal(await leaseForRun(deps, 'ios', runCommand, async (outcome) => outcome.devServer), devServer);
     assert.equal(existsSync(join(deps.workspace.root, 'context.json')), false, 'a lease writes no file for the tests to read');
     const metros = deps.workspace.unclosedEntries().filter((e) => e.kind === 'process' && e.what === 'metro');
     assert.equal(metros.length, 1, 'a reused Metro is ledgered once');
@@ -225,7 +225,7 @@ describe('lease flow', () => {
 
   it('names no dev server for hosts without a runtime', async () => {
     const { deps } = setup(0);
-    assert.equal(await leaseForRun(deps, 'ios', runCommand, { willChange: false }, async (outcome) => outcome.devServer), null);
+    assert.equal(await leaseForRun(deps, 'ios', runCommand, async (outcome) => outcome.devServer), null);
   });
 
   it('makes down wait for a run that holds the device, with one wait line, instead of failing DEVICE_BUSY', async () => {
@@ -233,7 +233,7 @@ describe('lease flow', () => {
     let downFinished = false;
     let releaseRun: () => void = () => undefined;
     let driving = false;
-    const running = leaseForRun(deps, 'ios', runCommand, { willChange: false }, () => new Promise<void>((resolve) => ((driving = true), (releaseRun = resolve))));
+    const running = leaseForRun(deps, 'ios', runCommand, () => new Promise<void>((resolve) => ((driving = true), (releaseRun = resolve))));
     await until(() => driving, 'the run to hold the device');
     progress.length = 0;
     const downing = down(deps, { verb: 'down', stale: false, dryRun: false }).then((result) => {

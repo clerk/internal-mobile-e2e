@@ -70,6 +70,12 @@ export interface CreatedApplication {
   readonly sk: Secret<'clerk-secret-key'>;
 }
 
+export type AppRef = Pick<CreatedApplication, 'application' | 'instanceId'>;
+
+type JsonObject = { readonly [key: string]: Json };
+
+const objectOf = (value: unknown): JsonObject => (typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as JsonObject) : {});
+
 export interface Listing {
   readonly applications: readonly ThrowawayApplication[];
   readonly at: Date | null;
@@ -81,7 +87,8 @@ export interface OpenWorkspace {
   readonly opened: Listing;
   list(): Promise<Listing>;
   create(name: string): Promise<CreatedApplication>;
-  configure(created: Pick<CreatedApplication, 'application' | 'instanceId'>, config: { readonly [key: string]: Json }, options?: { readonly dryRun?: boolean }): Promise<{ readonly after: Json }>;
+  configure(created: AppRef, config: JsonObject, options?: { readonly dryRun?: boolean }): Promise<{ readonly before: JsonObject; readonly after: JsonObject }>;
+  readConfig(created: AppRef, keys: readonly string[]): Promise<JsonObject>;
   delete(application: ThrowawayApplication): Promise<void>;
 }
 
@@ -346,6 +353,8 @@ export function createPlatform(deps: PlatformDeps): Platform {
     return new Secret('clerk-secret-key', development.secret_key);
   }
 
+  const configPath = (created: AppRef): string => `/applications/${created.application.id}/instances/${created.instanceId}/config`;
+
   async function open(): Promise<OpenWorkspace> {
     const credential = await credentialOnce();
     const key = keyIn(credential);
@@ -396,8 +405,11 @@ export function createPlatform(deps: PlatformDeps): Platform {
         };
       },
       async configure(created, config, options = {}) {
-        const answer = await send(key, 'PATCH', `/applications/${created.application.id}/instances/${created.instanceId}/config${options.dryRun === true ? '?dry_run=true' : ''}`, config);
-        if (answer.status === 200) return { after: (answer.json as { after?: Json } | null)?.after ?? null };
+        const answer = await send(key, 'PATCH', `${configPath(created)}${options.dryRun === true ? '?dry_run=true' : ''}`, config);
+        if (answer.status === 200) {
+          const { before, after } = objectOf(answer.json);
+          return { before: objectOf(before), after: objectOf(after) };
+        }
         const first = (answer.json as { errors?: readonly { message?: unknown; long_message?: unknown; meta?: { param_name?: unknown } }[] } | null)?.errors?.[0];
         const param = typeof first?.meta?.param_name === 'string' ? first.meta.param_name : null;
         if (answer.status < 400 || answer.status >= 500 || answer.status === 429 || (param === null && NOT_ABOUT_THE_BODY.has(answer.status))) throw refused(answer, `configuring ${created.application.name}`);
@@ -405,6 +417,13 @@ export function createPlatform(deps: PlatformDeps): Platform {
         const what = param === null ? said(answer) : `${param} (${said(answer)})`;
         const refusal = { param, said: message === null ? what : `${what}: ${message}` };
         throw new SettingsRefused(`Clerk's Platform API refused the config of ${created.application.name}: ${refusal.said}`, 'run `{cli} doctor`', refusal);
+      },
+      async readConfig(created, keys) {
+        const query = new URLSearchParams(keys.map((name) => ['keys', name]));
+        const answer = await send(key, 'GET', `${configPath(created)}${query.size === 0 ? '' : `?${query}`}`);
+        if (answer.status !== 200) throw refused(answer, `reading the config of ${created.application.name}`);
+        const { config_version: _version, ...config } = objectOf(answer.json);
+        return config;
       },
       async delete(application) {
         await guard();

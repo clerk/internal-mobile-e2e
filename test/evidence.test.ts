@@ -42,7 +42,7 @@ function partialRecord(dir: EvidencePath, run: RunId): Omit<EvidenceRecord, 'sea
     appLog: join(dir, 'app.log') as EvidencePath,
     e2eReport: join(dir, 'e2e', 'report.json') as EvidencePath,
     identities: [{ email: testEmail(run, 'maya'), userId: OWN_USER }],
-    settings: [{ label: 'standard', askedBy: null, specs: ['specs/explored/a.e2e.ts'], application: null, changed: false, held: true, e2eReport: join(dir, 'e2e', 'report.json') as EvidencePath }],
+    settings: [],
   };
 }
 
@@ -293,14 +293,20 @@ describe('the evidence block of a pull request description', () => {
   });
 });
 
-describe('assertPublishable and the groups of a run', () => {
-  it('rejects a run with a group that lost its settings or never invoked e2e, though every result passed', () => {
+describe('assertPublishable and the settings a test changed', () => {
+  it('rejects a run that left a change unrestored, though every result passed, and takes one whose changes were all restored', () => {
     const { dir, run } = runDir();
     const base = sealEvidence(dir, partialRecord(dir, run), []);
-    const group = base.settings[0]!;
-    const other = { ...group, label: 'auth_multi_factor.required_for_sign_up=true' };
-    assert.throws(() => assertPublishable({ ...base, settings: [group, { ...other, held: false }] }, []), { code: 'EVIDENCE_UNSAFE', message: /1 group that did not run in full on its settings: auth_multi_factor\.required_for_sign_up=true/ });
-    assert.throws(() => assertPublishable({ ...base, settings: [{ ...group, e2eReport: null }, other] }, []), { code: 'EVIDENCE_UNSAFE', message: /did not run in full on its settings: standard/ });
+    const change = { at: 'specs/features/session-tasks/setup-mfa.e2e.ts:8', changed: [{ leaf: 'auth_multi_factor.required_for_sign_up', from: false, to: true }], shown: ['user_settings.sign_up.mfa.required'], restored: true };
+    assert.equal(assertPublishable({ ...base, settings: [change] }, []).run, run);
+    assert.throws(() => assertPublishable({ ...base, settings: [change, { ...change, restored: false }] }, []), { code: 'EVIDENCE_UNSAFE', message: `run ${run} left settings a test changed unrestored: auth_multi_factor.required_for_sign_up` });
+  });
+
+  it('refuses a run that an older CLI recorded with settings groups, instead of failing to read it', () => {
+    const { dir, run } = runDir();
+    const base = sealEvidence(dir, partialRecord(dir, run), []);
+    const group = { label: 'standard', askedBy: null, specs: [], application: 'app_x', changed: false, held: true, e2eReport: null };
+    assert.throws(() => assertPublishable({ ...base, settings: [group as never] }, []), { code: 'EVIDENCE_UNSAFE', message: `run ${run} was recorded by an older version of the CLI, which kept settings in another shape` });
   });
 });
 
