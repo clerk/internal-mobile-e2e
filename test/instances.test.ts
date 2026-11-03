@@ -210,7 +210,7 @@ describe('platform credential', () => {
   });
 
   it('never runs op when no reference is set, and says how to set one without naming the item', async () => {
-    const unset: readonly Record<string, string>[] = [{}, { MOBILE_VERIFICATION_PLATFORM_API_KEY_REFERENCE: '  ' }];
+    const unset: readonly Record<string, string>[] = [{}, { MOBILE_VERIFICATION_PLATFORM_API_KEY_REFERENCE: '  ' }, { CLERK_PLATFORM_API_KEY: PLATFORM_KEY }];
     for (const env of unset) {
       const { ran, platform } = open(env, {}, op({ code: 0, stdout: PLATFORM_KEY, stderr: '' }));
       await assert.rejects(platform.open(), (error: VerifyFailure) => {
@@ -1666,6 +1666,14 @@ describe('the key and child processes', () => {
 
   it('gives a program it starts neither the platform key nor where it is kept', () => {
     assert.deepEqual(withoutClerkKeys({ ...credentialVariables, HOME: '/home/x' }), { HOME: '/home/x' });
+  });
+
+  it('keeps a Platform API key under the old or the web suite\'s names out of every child too', () => {
+    const otherNames = { CLERK_PLATFORM_API_KEY: PLATFORM_KEY, CLERK_PLATFORM_API_KEY_FILE: '/home/x/key', VERIFY_PLATFORM_KEY_REFERENCE: REFERENCE };
+    assert.deepEqual(withoutClerkKeys({ ...otherNames, HOME: '/home/x' }), { HOME: '/home/x' });
+    const env: NodeJS.ProcessEnv = { ...otherNames, PATH: '/usr/bin' };
+    takePlatformKey(env);
+    assert.deepEqual(env, { PATH: '/usr/bin' });
   });
 
   it('redacts a key from the moment it is read, before anything sends it', () => {

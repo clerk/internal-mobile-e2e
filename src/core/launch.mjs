@@ -3,7 +3,16 @@ import { existsSync } from 'node:fs';
 import net from 'node:net';
 import { delimiter, dirname } from 'node:path';
 
-export const PLATFORM_CREDENTIAL_VARIABLES = ['MOBILE_VERIFICATION_PLATFORM_API_KEY', 'MOBILE_VERIFICATION_PLATFORM_API_KEY_FILE', 'MOBILE_VERIFICATION_PLATFORM_API_KEY_REFERENCE'];
+// The CLI reads only the MOBILE_VERIFICATION_ names. The others still hold Platform API keys (clerk/javascript's web
+// suite uses CLERK_PLATFORM_API_KEY, and older setups used all three), so no child process may inherit them either.
+export const PLATFORM_CREDENTIAL_VARIABLES = [
+  'MOBILE_VERIFICATION_PLATFORM_API_KEY',
+  'MOBILE_VERIFICATION_PLATFORM_API_KEY_FILE',
+  'MOBILE_VERIFICATION_PLATFORM_API_KEY_REFERENCE',
+  'CLERK_PLATFORM_API_KEY',
+  'CLERK_PLATFORM_API_KEY_FILE',
+  'VERIFY_PLATFORM_KEY_REFERENCE',
+];
 export const AGENT_CREDENTIAL_VARIABLES = ['AI_GATEWAY_API_KEY', 'AI_GATEWAY_API_KEY_FILE'];
 export const INSTANCE_SECRET_VARIABLES = ['CLERK_SECRET_KEY'];
 
