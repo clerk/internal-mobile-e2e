@@ -37,7 +37,7 @@ const RETRY_AFTER_CAP_SECONDS = 60;
 const NOT_ABOUT_THE_BODY: ReadonlySet<number> = new Set([401, 403, 404, 408]);
 
 export type PlatformCredential =
-  | { readonly via: 'environment'; readonly variable: 'CLERK_PLATFORM_API_KEY' | 'CLERK_PLATFORM_API_KEY_FILE'; readonly key: Secret<'clerk-platform-key'> }
+  | { readonly via: 'environment'; readonly variable: 'MOBILE_VERIFICATION_PLATFORM_API_KEY' | 'MOBILE_VERIFICATION_PLATFORM_API_KEY_FILE'; readonly key: Secret<'clerk-platform-key'> }
   | { readonly via: 'one-password'; readonly key: Secret<'clerk-platform-key'> }
   | { readonly via: 'proxy' };
 
@@ -129,7 +129,7 @@ const noCredential = (tried: readonly string[], onAMac: string): VerifyFailure =
   new VerifyFailure(
     'KEYS_MISSING',
     `no Clerk Platform API credential works here (${tried.join('; ')})`,
-    `on a Mac, ${onAMac}; in a cloud environment, add an API credential for api.clerk.com with path prefix /v1/platform/; anywhere, set CLERK_PLATFORM_API_KEY to the team key, or CLERK_PLATFORM_API_KEY_FILE to a file that holds it and that only you can read`,
+    `on a Mac, ${onAMac}; in a cloud environment, add an API credential for api.clerk.com with path prefix /v1/platform/; anywhere, set MOBILE_VERIFICATION_PLATFORM_API_KEY to the team key, or MOBILE_VERIFICATION_PLATFORM_API_KEY_FILE to a file that holds it and that only you can read`,
   );
 
 type KeyReference = Secret<'one-password-reference'>;
@@ -139,8 +139,8 @@ function keyReference(env: PlatformDeps['env']): KeyReference | null {
     if (!value.startsWith('op://')) throw new VerifyFailure('USAGE', `${source} does not hold a 1Password secret reference`, `put a reference of the shape ${REFERENCE_SHAPE} there, or remove it`);
     return new Secret('one-password-reference', value);
   };
-  const inline = env.VERIFY_PLATFORM_KEY_REFERENCE?.trim() ?? '';
-  return inline === '' ? null : held(inline, 'VERIFY_PLATFORM_KEY_REFERENCE');
+  const inline = env.MOBILE_VERIFICATION_PLATFORM_API_KEY_REFERENCE?.trim() ?? '';
+  return inline === '' ? null : held(inline, 'MOBILE_VERIFICATION_PLATFORM_API_KEY_REFERENCE');
 }
 
 function withoutReference(text: string, reference: string): string {
@@ -155,18 +155,18 @@ function keyFromText(text: string, source: string): Secret<'clerk-platform-key'>
 }
 
 function environmentCredential(env: PlatformDeps['env']): Extract<PlatformCredential, { via: 'environment' }> | null {
-  const inline = env.CLERK_PLATFORM_API_KEY;
-  if (inline !== undefined && inline.trim() !== '') return { via: 'environment', variable: 'CLERK_PLATFORM_API_KEY', key: keyFromText(inline, 'CLERK_PLATFORM_API_KEY') };
-  const file = env.CLERK_PLATFORM_API_KEY_FILE;
+  const inline = env.MOBILE_VERIFICATION_PLATFORM_API_KEY;
+  if (inline !== undefined && inline.trim() !== '') return { via: 'environment', variable: 'MOBILE_VERIFICATION_PLATFORM_API_KEY', key: keyFromText(inline, 'MOBILE_VERIFICATION_PLATFORM_API_KEY') };
+  const file = env.MOBILE_VERIFICATION_PLATFORM_API_KEY_FILE;
   if (file === undefined || file.trim() === '') return null;
   let mode: number;
   try {
     mode = statSync(file).mode;
   } catch {
-    throw new VerifyFailure('KEYS_MISSING', `CLERK_PLATFORM_API_KEY_FILE names ${file}, which does not exist`, 'unset CLERK_PLATFORM_API_KEY_FILE, or point it at a file that holds the key');
+    throw new VerifyFailure('KEYS_MISSING', `MOBILE_VERIFICATION_PLATFORM_API_KEY_FILE names ${file}, which does not exist`, 'unset MOBILE_VERIFICATION_PLATFORM_API_KEY_FILE, or point it at a file that holds the key');
   }
   if ((mode & 0o077) !== 0) throw new VerifyFailure('KEYS_MISSING', `${file} can be read by other users of this machine`, `chmod 600 ${file}`);
-  return { via: 'environment', variable: 'CLERK_PLATFORM_API_KEY_FILE', key: keyFromText(readFileSync(file, 'utf8'), file) };
+  return { via: 'environment', variable: 'MOBILE_VERIFICATION_PLATFORM_API_KEY_FILE', key: keyFromText(readFileSync(file, 'utf8'), file) };
 }
 
 export function createPlatform(deps: PlatformDeps): Platform {
@@ -268,7 +268,7 @@ export function createPlatform(deps: PlatformDeps): Platform {
     if (fromEnvironment !== null) {
       return checked(fromEnvironment, fromEnvironment.key, (refusal) => new VerifyFailure('KEYS_MISSING', `${fromEnvironment.variable} is set, and Clerk's Platform API answered ${refusal} to it`, 'set it to the team key, or unset it so the next source is tried'));
     }
-    const tried = ['CLERK_PLATFORM_API_KEY and CLERK_PLATFORM_API_KEY_FILE are not set'];
+    const tried = ['MOBILE_VERIFICATION_PLATFORM_API_KEY and MOBILE_VERIFICATION_PLATFORM_API_KEY_FILE are not set'];
 
     const bare = await reaches(null);
     if ('workspace' in bare) {
@@ -283,7 +283,7 @@ export function createPlatform(deps: PlatformDeps): Platform {
       tried.push('no 1Password reference is set');
       throw noCredential(
         tried,
-        `with the 1Password CLI installed and its desktop app integration on, set VERIFY_PLATFORM_KEY_REFERENCE to the 1Password secret reference of the item that holds the team key, of the shape ${REFERENCE_SHAPE}`,
+        `with the 1Password CLI installed and its desktop app integration on, set MOBILE_VERIFICATION_PLATFORM_API_KEY_REFERENCE to the 1Password secret reference of the item that holds the team key, of the shape ${REFERENCE_SHAPE}`,
       );
     }
     if ((await deps.runner('op', ['--version'])).code !== 0) {
@@ -297,7 +297,7 @@ export function createPlatform(deps: PlatformDeps): Platform {
     });
     if (read.code !== 0 || read.stdout.trim() === '') {
       const why = read.code === 124 ? `was not approved within ${OP_WAIT_SECONDS}s` : `failed: ${read.stderr.trim().split('\n')[0] || `exit ${read.code}`}`;
-      throw new VerifyFailure('KEYS_MISSING', `op read of ${REFERENCED_ITEM} ${why}`, 'approve the request in the 1Password app (Settings, Developer, "Integrate with 1Password CLI" must be on) and rerun; or set CLERK_PLATFORM_API_KEY');
+      throw new VerifyFailure('KEYS_MISSING', `op read of ${REFERENCED_ITEM} ${why}`, 'approve the request in the 1Password app (Settings, Developer, "Integrate with 1Password CLI" must be on) and rerun; or set MOBILE_VERIFICATION_PLATFORM_API_KEY');
     }
     const credential: PlatformCredential = { via: 'one-password', key: keyFromText(read.stdout, REFERENCED_ITEM) };
     return checked(credential, credential.key, (refusal) => new VerifyFailure('KEYS_MISSING', `Clerk's Platform API answered ${refusal} to the key in ${REFERENCED_ITEM}`, 'the item holds a key that no longer works; replace it with a current team key'));

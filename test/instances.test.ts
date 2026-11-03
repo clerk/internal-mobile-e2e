@@ -51,7 +51,7 @@ function world(options: { readonly env?: Record<string, string>; readonly clerk?
   const workspace = openWorkspace({ packageDir: dir, worktree: dir, home: options.home ?? join(dir, 'home') });
   const lines: string[] = [];
   const slept: number[] = [];
-  const env = options.env ?? { CLERK_PLATFORM_API_KEY: PLATFORM_KEY };
+  const env = options.env ?? { MOBILE_VERIFICATION_PLATFORM_API_KEY: PLATFORM_KEY };
   const alive = new Set<number>();
   const open = (pid = 1000, fetchImpl: typeof fetch = clerk.fetch) =>
     createInstances({
@@ -155,11 +155,11 @@ describe('platform credential', () => {
     return { fake, lines, ran, platform };
   };
   const op = opAnswers;
-  const referenced = { VERIFY_PLATFORM_KEY_REFERENCE: REFERENCE };
+  const referenced = { MOBILE_VERIFICATION_PLATFORM_API_KEY_REFERENCE: REFERENCE };
   const readsOf = (ran: readonly string[][]) => ran.filter((command) => command[1] === 'read');
 
   it('uses the environment variable and asks 1Password nothing', async () => {
-    const { fake, ran, platform } = open({ CLERK_PLATFORM_API_KEY: PLATFORM_KEY });
+    const { fake, ran, platform } = open({ MOBILE_VERIFICATION_PLATFORM_API_KEY: PLATFORM_KEY });
     const workspace = await platform.open();
     assert.equal(workspace.credential.via, 'environment');
     assert.equal(workspace.workspace, WORKSPACE);
@@ -168,8 +168,8 @@ describe('platform credential', () => {
   });
 
   it('fails on a set variable that does not work, with no fall-through', async () => {
-    const { ran, platform } = open({ CLERK_PLATFORM_API_KEY: 'ak_someOtherKey' }, { attachesKey: false });
-    await assert.rejects(platform.open(), (error: VerifyFailure) => error.code === 'KEYS_MISSING' && /CLERK_PLATFORM_API_KEY is set/.test(error.message));
+    const { ran, platform } = open({ MOBILE_VERIFICATION_PLATFORM_API_KEY: 'ak_someOtherKey' }, { attachesKey: false });
+    await assert.rejects(platform.open(), (error: VerifyFailure) => error.code === 'KEYS_MISSING' && /MOBILE_VERIFICATION_PLATFORM_API_KEY is set/.test(error.message));
     assert.deepEqual(ran, []);
   });
 
@@ -177,9 +177,9 @@ describe('platform credential', () => {
     const dir = mkdtempSync(join(tmpdir(), 'verify-key-'));
     const file = join(dir, 'key');
     writeFileSync(file, `${PLATFORM_KEY}\n`, { mode: 0o600 });
-    assert.equal((await open({ CLERK_PLATFORM_API_KEY_FILE: file }).platform.open()).credential.via, 'environment');
+    assert.equal((await open({ MOBILE_VERIFICATION_PLATFORM_API_KEY_FILE: file }).platform.open()).credential.via, 'environment');
     chmodSync(file, 0o644);
-    await assert.rejects(open({ CLERK_PLATFORM_API_KEY_FILE: file }).platform.open(), (error: VerifyFailure) => error.fix === `chmod 600 ${file}`);
+    await assert.rejects(open({ MOBILE_VERIFICATION_PLATFORM_API_KEY_FILE: file }).platform.open(), (error: VerifyFailure) => error.fix === `chmod 600 ${file}`);
   });
 
   it('holds no key when something outside the machine attaches one', async () => {
@@ -210,15 +210,15 @@ describe('platform credential', () => {
   });
 
   it('never runs op when no reference is set, and says how to set one without naming the item', async () => {
-    const unset: readonly Record<string, string>[] = [{}, { VERIFY_PLATFORM_KEY_REFERENCE: '  ' }];
+    const unset: readonly Record<string, string>[] = [{}, { MOBILE_VERIFICATION_PLATFORM_API_KEY_REFERENCE: '  ' }, { CLERK_PLATFORM_API_KEY: PLATFORM_KEY }];
     for (const env of unset) {
       const { ran, platform } = open(env, {}, op({ code: 0, stdout: PLATFORM_KEY, stderr: '' }));
       await assert.rejects(platform.open(), (error: VerifyFailure) => {
         assert.equal(error.code, 'KEYS_MISSING');
-        assert.equal(error.message, 'no Clerk Platform API credential works here (CLERK_PLATFORM_API_KEY and CLERK_PLATFORM_API_KEY_FILE are not set; a request with no key gets 401 authorization_header_format_invalid, so nothing outside this machine attaches one; no 1Password reference is set)');
+        assert.equal(error.message, 'no Clerk Platform API credential works here (MOBILE_VERIFICATION_PLATFORM_API_KEY and MOBILE_VERIFICATION_PLATFORM_API_KEY_FILE are not set; a request with no key gets 401 authorization_header_format_invalid, so nothing outside this machine attaches one; no 1Password reference is set)');
         assert.equal(
           error.fix,
-          `on a Mac, with the 1Password CLI installed and its desktop app integration on, set VERIFY_PLATFORM_KEY_REFERENCE to the 1Password secret reference of the item that holds the team key, of the shape ${REFERENCE_SHAPE}; in a cloud environment, add an API credential for api.clerk.com with path prefix /v1/platform/; anywhere, set CLERK_PLATFORM_API_KEY to the team key, or CLERK_PLATFORM_API_KEY_FILE to a file that holds it and that only you can read`,
+          `on a Mac, with the 1Password CLI installed and its desktop app integration on, set MOBILE_VERIFICATION_PLATFORM_API_KEY_REFERENCE to the 1Password secret reference of the item that holds the team key, of the shape ${REFERENCE_SHAPE}; in a cloud environment, add an API credential for api.clerk.com with path prefix /v1/platform/; anywhere, set MOBILE_VERIFICATION_PLATFORM_API_KEY to the team key, or MOBILE_VERIFICATION_PLATFORM_API_KEY_FILE to a file that holds it and that only you can read`,
         );
         return true;
       });
@@ -227,10 +227,10 @@ describe('platform credential', () => {
   });
 
   it('refuses a reference that is not an op:// reference, naming where it was and not what it was', async () => {
-    const { ran, platform } = open({ VERIFY_PLATFORM_KEY_REFERENCE: 'Fake Vault/fake item/credential' }, {}, op({ code: 0, stdout: PLATFORM_KEY, stderr: '' }));
+    const { ran, platform } = open({ MOBILE_VERIFICATION_PLATFORM_API_KEY_REFERENCE: 'Fake Vault/fake item/credential' }, {}, op({ code: 0, stdout: PLATFORM_KEY, stderr: '' }));
     await assert.rejects(platform.open(), (error: VerifyFailure) => {
       assert.equal(error.code, 'USAGE');
-      assert.equal(error.message, 'VERIFY_PLATFORM_KEY_REFERENCE does not hold a 1Password secret reference');
+      assert.equal(error.message, 'MOBILE_VERIFICATION_PLATFORM_API_KEY_REFERENCE does not hold a 1Password secret reference');
       assert.equal(error.fix, `put a reference of the shape ${REFERENCE_SHAPE} there, or remove it`);
       return true;
     });
@@ -238,8 +238,8 @@ describe('platform credential', () => {
   });
 
   it('does not fail over a malformed reference when a source it tries before 1Password works', async () => {
-    const malformed = { VERIFY_PLATFORM_KEY_REFERENCE: 'Fake Vault/fake item/credential' };
-    const keyed = open({ ...malformed, CLERK_PLATFORM_API_KEY: PLATFORM_KEY });
+    const malformed = { MOBILE_VERIFICATION_PLATFORM_API_KEY_REFERENCE: 'Fake Vault/fake item/credential' };
+    const keyed = open({ ...malformed, MOBILE_VERIFICATION_PLATFORM_API_KEY: PLATFORM_KEY });
     assert.equal((await keyed.platform.open()).credential.via, 'environment');
     const proxied = open(malformed, { attachesKey: true });
     assert.equal((await proxied.platform.open()).credential.via, 'proxy');
@@ -255,7 +255,7 @@ describe('platform credential', () => {
   it('does not print the reference, the vault, or the item when op repeats them in its error', async () => {
     const reference = 'op://vault-only-here/item-only-here/credential';
     const stderr = `[ERROR] could not read secret '${reference}': "item-only-here" isn't an item in the "vault-only-here" vault\n`;
-    const { platform } = open({ VERIFY_PLATFORM_KEY_REFERENCE: reference }, {}, op({ code: 1, stdout: '', stderr }));
+    const { platform } = open({ MOBILE_VERIFICATION_PLATFORM_API_KEY_REFERENCE: reference }, {}, op({ code: 1, stdout: '', stderr }));
     const failure = await platform.open().then(() => assert.fail('the read failed'), (error: VerifyFailure) => error);
     assert.equal(failure.message, 'op read of the 1Password item the reference names failed: [ERROR] could not read secret \'<redacted>\': "<redacted>" isn\'t an item in the "<redacted>" vault');
     let printed = '';
@@ -275,13 +275,13 @@ describe('platform credential', () => {
   });
 
   it('refuses a key of any other workspace before it lists or creates anything', async () => {
-    const { fake, platform } = open({ CLERK_PLATFORM_API_KEY: PLATFORM_KEY }, { workspace: 'org_someRealWorkspace' });
+    const { fake, platform } = open({ MOBILE_VERIFICATION_PLATFORM_API_KEY: PLATFORM_KEY }, { workspace: 'org_someRealWorkspace' });
     await assert.rejects(platform.open(), (error: VerifyFailure) => error.code === 'KEYS_MISSING' && error.message.includes('org_someRealWorkspace') && error.message.includes(WORKSPACE));
     assert.deepEqual(fake.requests.map((r) => r.url), ['api.clerk.com/v1/platform/me']);
   });
 
   it('refuses a workspace that holds an application without the prefix', async () => {
-    const { fake, platform } = open({ CLERK_PLATFORM_API_KEY: PLATFORM_KEY });
+    const { fake, platform } = open({ MOBILE_VERIFICATION_PLATFORM_API_KEY: PLATFORM_KEY });
     fake.plant('Production Dashboard');
     await assert.rejects(platform.open(), (error: VerifyFailure) => error.code === 'NOT_READY' && /does not start with verify-throwaway-/.test(error.message) && !error.message.includes('Production Dashboard'));
     assert.ok(fake.requests.every((request) => request.method === 'GET'));
@@ -290,7 +290,7 @@ describe('platform credential', () => {
   it('checks the workspace again before a create that comes long after the last check', async () => {
     let at = T0;
     const fake = fakeClerk({ now: () => at });
-    const platform = createPlatform({ env: { CLERK_PLATFORM_API_KEY: PLATFORM_KEY }, runner: noOp, progress: () => undefined, fetch: fake.fetch, now: () => at });
+    const platform = createPlatform({ env: { MOBILE_VERIFICATION_PLATFORM_API_KEY: PLATFORM_KEY }, runner: noOp, progress: () => undefined, fetch: fake.fetch, now: () => at });
     const workspace = await platform.open();
     await workspace.create(throwawayName(new Date(T0 + HOUR), 'aaaaaaaa'));
     assert.equal(fake.requests.length, 3, 'a create right after the check adds one request');
@@ -304,7 +304,7 @@ describe('platform credential', () => {
     const fake = fakeClerk();
     const waits: number[] = [];
     const lines: string[] = [];
-    const platform = createPlatform({ env: { CLERK_PLATFORM_API_KEY: PLATFORM_KEY }, runner: noOp, progress: (line) => lines.push(line), fetch: fake.fetch, sleep: async (ms) => void waits.push(ms) });
+    const platform = createPlatform({ env: { MOBILE_VERIFICATION_PLATFORM_API_KEY: PLATFORM_KEY }, runner: noOp, progress: (line) => lines.push(line), fetch: fake.fetch, sleep: async (ms) => void waits.push(ms) });
     fake.rateLimit(2, '7');
     await platform.open();
     assert.deepEqual(waits, [7000, 7000]);
@@ -321,7 +321,7 @@ describe('platform credential', () => {
 
   it('gives up on a rate limit that does not lift, with an error a caller may retry', async () => {
     const fake = fakeClerk();
-    const platform = createPlatform({ env: { CLERK_PLATFORM_API_KEY: PLATFORM_KEY }, runner: noOp, progress: () => undefined, fetch: fake.fetch, sleep: async () => undefined });
+    const platform = createPlatform({ env: { MOBILE_VERIFICATION_PLATFORM_API_KEY: PLATFORM_KEY }, runner: noOp, progress: () => undefined, fetch: fake.fetch, sleep: async () => undefined });
     fake.rateLimit(50);
     await assert.rejects(platform.open(), (error: VerifyFailure) => error.code === 'RATE_LIMITED' && RETRYABLE.has(error.code));
     assert.ok(fake.requests.length > 1 && fake.requests.length <= 10, `it retried a bounded number of times (${fake.requests.length} requests)`);
@@ -329,7 +329,7 @@ describe('platform credential', () => {
 
   it('refuses a list that is not one array, because a partial list would hide what the workspace holds', async () => {
     for (const shape of ['envelope', 'unreadable'] as const) {
-      const { fake, platform } = open({ CLERK_PLATFORM_API_KEY: PLATFORM_KEY });
+      const { fake, platform } = open({ MOBILE_VERIFICATION_PLATFORM_API_KEY: PLATFORM_KEY });
       fake.plant(throwawayName(new Date(T0), 'aaaaaaaa'));
       fake.plant('Production Dashboard');
       fake.state.listShape = shape;
@@ -342,7 +342,7 @@ describe('platform credential', () => {
   it('checks the workspace again before a delete that comes long after the last check', async () => {
     let at = T0;
     const fake = fakeClerk({ now: () => at });
-    const platform = createPlatform({ env: { CLERK_PLATFORM_API_KEY: PLATFORM_KEY }, runner: noOp, progress: () => undefined, fetch: fake.fetch, now: () => at });
+    const platform = createPlatform({ env: { MOBILE_VERIFICATION_PLATFORM_API_KEY: PLATFORM_KEY }, runner: noOp, progress: () => undefined, fetch: fake.fetch, now: () => at });
     const workspace = await platform.open();
     const created = await workspace.create(throwawayName(new Date(T0 + HOUR), 'aaaaaaaa'));
     at += 60_000;
@@ -359,7 +359,7 @@ describe('platform credential', () => {
 describe('what Clerk says to a config change', () => {
   const opened = async () => {
     const fake = fakeClerk();
-    const platform = createPlatform({ env: { CLERK_PLATFORM_API_KEY: PLATFORM_KEY }, runner: noOp, progress: quiet, fetch: fake.fetch, sleep: async () => undefined });
+    const platform = createPlatform({ env: { MOBILE_VERIFICATION_PLATFORM_API_KEY: PLATFORM_KEY }, runner: noOp, progress: quiet, fetch: fake.fetch, sleep: async () => undefined });
     const workspace = await platform.open();
     const created = await workspace.create(throwawayName(new Date(T0 + HOUR), 'aaaaaaaa'));
     return { fake, workspace, created };
@@ -587,7 +587,7 @@ describe('one throwaway application', () => {
   it('sets the deadline by Clerk\'s clock when this machine\'s clock is wrong', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'verify-instances-'));
     const clerk = fakeClerk({ now: () => T0 });
-    const instances = createInstances({ workspace: openWorkspace({ packageDir: dir, worktree: dir, home: join(dir, 'home') }), env: { CLERK_PLATFORM_API_KEY: PLATFORM_KEY }, runner: noOp, progress: quiet, fetch: clerk.fetch, now: () => T0 - 5 * HOUR });
+    const instances = createInstances({ workspace: openWorkspace({ packageDir: dir, worktree: dir, home: join(dir, 'home') }), env: { MOBILE_VERIFICATION_PLATFORM_API_KEY: PLATFORM_KEY }, runner: noOp, progress: quiet, fetch: clerk.fetch, now: () => T0 - 5 * HOUR });
     await instances.ensure(quiet);
     assert.equal(deadlineOf(clerk.live()[0]!.name)?.getTime(), T0 + 6 * HOUR);
   });
@@ -607,7 +607,7 @@ describe('one throwaway application', () => {
   });
 
   it('rejects a lifetime shorter than a session can last', async () => {
-    const w = world({ env: { CLERK_PLATFORM_API_KEY: PLATFORM_KEY, VERIFY_THROWAWAY_HOURS: '0' } });
+    const w = world({ env: { MOBILE_VERIFICATION_PLATFORM_API_KEY: PLATFORM_KEY, VERIFY_THROWAWAY_HOURS: '0' } });
     await assert.rejects(w.instances.ensure(quiet), (error: VerifyFailure) => error.code === 'USAGE');
     assert.equal(w.clerk.applications.length, 0);
   });
@@ -1373,7 +1373,7 @@ describe('reaping', () => {
     const clerk = fakeClerk({ now: () => T0 });
     const other = clerk.plant(throwawayName(new Date(T0 + HOUR), 'aaaaaaaa'));
     const fastClock = T0 + 5 * HOUR;
-    const instances = createInstances({ workspace: openWorkspace({ packageDir: dir, worktree: dir, home: join(dir, 'home') }), env: { CLERK_PLATFORM_API_KEY: PLATFORM_KEY }, runner: noOp, progress: quiet, fetch: clerk.fetch, now: () => fastClock });
+    const instances = createInstances({ workspace: openWorkspace({ packageDir: dir, worktree: dir, home: join(dir, 'home') }), env: { MOBILE_VERIFICATION_PLATFORM_API_KEY: PLATFORM_KEY }, runner: noOp, progress: quiet, fetch: clerk.fetch, now: () => fastClock });
     await instances.ensure(quiet);
     assert.equal(other.deleted, false);
   });
@@ -1443,7 +1443,7 @@ describe('doctor', () => {
     const w = world();
     const checks = await w.instances.doctorChecks({ live: false }, quiet);
     assert.deepEqual(checks.map((c) => [c.id, c.ok]), [['instances', true], ['clerk-api', true], ['settings', true]]);
-    assert.match(checks[0]!.detail, /^CLERK_PLATFORM_API_KEY reaches the verification workspace org_3KHungJxbvIscuSvy8oos5MHAli; none created yet$/);
+    assert.match(checks[0]!.detail, /^MOBILE_VERIFICATION_PLATFORM_API_KEY reaches the verification workspace org_3KHungJxbvIscuSvy8oos5MHAli; none created yet$/);
     assert.match(checks[1]!.detail, /^not observed yet/);
     assert.equal(checks[2]!.detail, `none created yet; up creates one application from ${STANDARD_FILE}`);
     assert.deepEqual(platformCalls(w), ['GET /me', 'GET /applications']);
@@ -1483,7 +1483,7 @@ describe('doctor', () => {
     const application = w.clerk.live()[0]!;
     application.environment['auth_config.reverification'] = false;
     const standard = await w.open().doctorChecks({ live: false }, quiet);
-    assert.match(standard[0]!.detail, new RegExp(`^CLERK_PLATFORM_API_KEY reaches the verification workspace ${WORKSPACE}; ${application.id} \\(${application.name}\\) on standard$`));
+    assert.match(standard[0]!.detail, new RegExp(`^MOBILE_VERIFICATION_PLATFORM_API_KEY reaches the verification workspace ${WORKSPACE}; ${application.id} \\(${application.name}\\) on standard$`));
     assert.equal(standard[1]!.detail, `api.clerk.com accepts the own key of ${application.id}`);
     assert.deepEqual([standard[2]!.id, standard[2]!.ok], ['settings', true]);
     assert.equal(standard[2]!.detail, `${application.id} is on standard; ${LEAVES} settings match ${STANDARD_FILE}`, 'a setting the file does not require is not reported');
@@ -1557,7 +1557,7 @@ describe('doctor', () => {
       const checks = await w.instances.doctorChecks({ live }, quiet);
       assert.deepEqual(checks.map((c) => [c.id, c.ok]), [['instances', false]]);
       const fix = checks[0]!.fix ?? '';
-      for (const way of ['set CLERK_PLATFORM_API_KEY to the team key', 'CLERK_PLATFORM_API_KEY_FILE', 'VERIFY_PLATFORM_KEY_REFERENCE']) assert.ok(fix.includes(way), way);
+      for (const way of ['set MOBILE_VERIFICATION_PLATFORM_API_KEY to the team key', 'MOBILE_VERIFICATION_PLATFORM_API_KEY_FILE', 'MOBILE_VERIFICATION_PLATFORM_API_KEY_REFERENCE']) assert.ok(fix.includes(way), way);
       assert.deepEqual(fix.match(/op:\/\/[^;\s]*/g), [REFERENCE_SHAPE], 'the reference is shown as a shape, never with a vault or an item');
       let printed = '';
       createOutput(false, w.dir, 'bin/control-x', { write: (line: string) => (printed += line) }, { write: () => true }).result({ verb: 'doctor', ok: false, backend: { ios: 'local' }, checks });
@@ -1655,7 +1655,7 @@ describe('down with throwaway instances', () => {
 });
 
 describe('the key and child processes', () => {
-  const credentialVariables = { CLERK_PLATFORM_API_KEY: PLATFORM_KEY, CLERK_PLATFORM_API_KEY_FILE: '/home/x/key', VERIFY_PLATFORM_KEY_REFERENCE: REFERENCE };
+  const credentialVariables = { MOBILE_VERIFICATION_PLATFORM_API_KEY: PLATFORM_KEY, MOBILE_VERIFICATION_PLATFORM_API_KEY_FILE: '/home/x/key', MOBILE_VERIFICATION_PLATFORM_API_KEY_REFERENCE: REFERENCE };
 
   it('takes the Platform API key and where it is kept out of the environment every child inherits, and keeps them for the instances layer', () => {
     const env: NodeJS.ProcessEnv = { ...credentialVariables, PATH: '/usr/bin' };
@@ -1666,6 +1666,14 @@ describe('the key and child processes', () => {
 
   it('gives a program it starts neither the platform key nor where it is kept', () => {
     assert.deepEqual(withoutClerkKeys({ ...credentialVariables, HOME: '/home/x' }), { HOME: '/home/x' });
+  });
+
+  it('keeps a Platform API key under the old or the web suite\'s names out of every child too', () => {
+    const otherNames = { CLERK_PLATFORM_API_KEY: PLATFORM_KEY, CLERK_PLATFORM_API_KEY_FILE: '/home/x/key', VERIFY_PLATFORM_KEY_REFERENCE: REFERENCE };
+    assert.deepEqual(withoutClerkKeys({ ...otherNames, HOME: '/home/x' }), { HOME: '/home/x' });
+    const env: NodeJS.ProcessEnv = { ...otherNames, PATH: '/usr/bin' };
+    takePlatformKey(env);
+    assert.deepEqual(env, { PATH: '/usr/bin' });
   });
 
   it('redacts a key from the moment it is read, before anything sends it', () => {

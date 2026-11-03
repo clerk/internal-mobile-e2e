@@ -245,7 +245,7 @@ function world(options: { readonly specs?: readonly string[]; readonly plan?: Fa
     },
   } as unknown as HostAdapter;
   const workspace = openWorkspace({ packageDir: dir, worktree: dir, home: join(dir, 'home') });
-  const env = options.env ?? { CLERK_PLATFORM_API_KEY: PLATFORM_KEY };
+  const env = options.env ?? { MOBILE_VERIFICATION_PLATFORM_API_KEY: PLATFORM_KEY };
   const deps = (instanceEnv: Record<string, string> = env): Deps => ({
     host,
     workspace,
