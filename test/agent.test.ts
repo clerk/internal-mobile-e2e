@@ -49,7 +49,7 @@ function fakeE2E(): string {
     "const seen = (name) => process.env[name] ?? 'unset';",
     "console.log(`key=${seen('AI_GATEWAY_API_KEY')}`);",
     "console.log(`file=${seen('AI_GATEWAY_API_KEY_FILE')}`);",
-    "console.log(`platform=${seen('CLERK_PLATFORM_API_KEY')}`);",
+    "console.log(`platform=${seen('MOBILE_VERIFICATION_PLATFORM_API_KEY')}`);",
     "console.log(`secret=${seen('CLERK_SECRET_KEY')}`);",
     "console.log(`app=${seen('CLERK_E2E_APP_PATH')}`);",
     "console.log(`device=${seen('CLERK_E2E_DEVICE')}`);",

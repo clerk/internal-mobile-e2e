@@ -101,4 +101,4 @@ npm run typecheck
 
 The build generates a source fingerprint in `src/core/version.json` and copies it into `dist`. Remote sessions use it to reject incompatible cores. Runtime assets, including the compiled remote recipe, ship inside `dist`. Neither generated output nor dependencies are committed.
 
-This tooling creates and deletes throwaway Clerk instances and reads the `MOBILE_VERIFICATION_PLATFORM_API_KEY` secret at runtime through the consumer's `CLERK_PLATFORM_API_KEY` environment variable. No secrets live in this repo.
+This tooling creates and deletes throwaway Clerk instances and reads the key at runtime from the `MOBILE_VERIFICATION_PLATFORM_API_KEY` environment variable, which each consumer's CI fills from the secret of the same name. No secrets live in this repo.
