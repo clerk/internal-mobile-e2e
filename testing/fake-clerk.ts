@@ -196,7 +196,7 @@ export function fakeClerk(options: FakeClerkOptions = {}) {
           continue;
         }
         for (const app of Object.keys(apps)) if (!application.registered.includes(`${os}.${app}`)) return error(422, 'config_validation_error');
-        const shown = Object.entries(apps).map(([id, minimum]) => ({ bundle_id: id, minimum_version: minimum.minimum_version, update_url: minimum.update_url }));
+        const shown = Object.entries(apps).map(([id, minimum]) => ({ [os === 'ios' ? 'bundle_id' : 'package_name']: id, minimum_version: minimum.minimum_version, update_url: minimum.update_url }));
         if (state.minimumShownAfterReads > 0) lagging = { application, leaf: shows, value: shown, reads: state.minimumShownAfterReads };
         else application.environment[shows] = shown;
       }

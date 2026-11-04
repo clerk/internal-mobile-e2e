@@ -970,6 +970,17 @@ describe('changing settings in a test', () => {
       assert.deepEqual(shownLeaf(w, SHOWS), [{ bundle_id: 'com.clerk.E2EHost', minimum_version: '2.0', update_url: 'https://apps.apple.com/app/id2' }]);
     });
 
+    it('registers an Android app by its package name, and sets and deletes its minimum', async () => {
+      const w = world();
+      const driving = await driven(w);
+      const shows = 'native_app_settings.minimum_supported_version.android';
+      await driving.useMinimumAppVersion({ app: { platform: 'android', id: 'com.clerk.e2e' }, minimumVersion: '42', updateUrl: 'https://play.google.com/store/apps/details?id=com.clerk.e2e' }, null);
+      assert.deepEqual(w.clerk.live()[0]!.registered, ['android.com.clerk.e2e']);
+      assert.deepEqual(shownLeaf(w, shows), [{ package_name: 'com.clerk.e2e', minimum_version: '42', update_url: 'https://play.google.com/store/apps/details?id=com.clerk.e2e' }]);
+      await driving.restore();
+      assert.deepEqual(shownLeaf(w, shows), []);
+    });
+
     it('restores a minimum and a setting that one test changed together', async () => {
       const w = world();
       const driving = await driven(w);
