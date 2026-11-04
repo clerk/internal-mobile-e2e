@@ -17,6 +17,7 @@ interface FakeApplication {
   users: number;
   created: { readonly id: string; readonly email_addresses: readonly { readonly email_address: string }[] }[];
   deleted: boolean;
+  registered: string[];
 }
 
 type JsonObject = { readonly [key: string]: Json };
@@ -119,7 +120,7 @@ export function fakeClerk(options: FakeClerkOptions = {}) {
   const freshConfig = (): Record<string, Json> =>
     [...Object.entries(OUTSIDE_BASE), ['session_settings.multi_session_enabled', false] as const, ['auth_password.min_length', 15] as const].reduce((config, [path, value]) => merged(config, nested(path, value)), structuredClone(standardFile().config) as Record<string, Json>);
 
-  const fresh = (): Pick<FakeApplication, 'config' | 'environment' | 'users' | 'created' | 'deleted'> => ({ config: freshConfig(), environment: freshEnvironment(), users: 0, created: [], deleted: false });
+  const fresh = (): Pick<FakeApplication, 'config' | 'environment' | 'users' | 'created' | 'deleted' | 'registered'> => ({ registered: [], config: freshConfig(), environment: freshEnvironment(), users: 0, created: [], deleted: false });
 
   function platform(method: string, path: string, authorization: string | null, body: unknown): Response {
     if (rateLimited.left > 0) {
@@ -170,7 +171,33 @@ export function fakeClerk(options: FakeClerkOptions = {}) {
       if (state.loseCreateAnswer) return error(500, 'internal');
       return json(200, { application_id: application.id, name: application.name, instances: [{ environment_type: 'development', instance_id: application.instanceId, publishable_key: application.pk, secret_key: application.sk }] });
     }
-    const config = /^\/applications\/([^/]+)\/instances\/([^/?]+)\/config(\?dry_run=true)?$/.exec(path);
+    const native = /^\/applications\/([^/]+)\/instances\/([^/?]+)\/native_applications\/(ios|android)$/.exec(path);
+    if (method === 'POST' && native !== null) {
+      const application = live().find((candidate) => candidate.id === native[1]);
+      if (application === undefined) return error(404, 'resource_not_found');
+      const sent = body as { readonly bundle_id?: string; readonly package_name?: string };
+      const app = `${native[3]}.${sent.bundle_id ?? sent.package_name}`;
+      if (application.registered.includes(app)) return error(422, 'form_identifier_exists');
+      application.registered.push(app);
+      return json(200, { object: `${native[3]}_application` });
+    }
+    const config = /^\/applications\/([^/]+)\/instances\/([^/?]+)\/config(?:\?dry_run=true)?(\?destructive=true)?$/.exec(path);
+    const minimums = (body as { readonly native_app_minimum_versions?: Readonly<Record<string, Readonly<Record<string, { readonly minimum_version: string; readonly update_url: string }>> | null>> } | null)?.native_app_minimum_versions;
+    if (method === 'PATCH' && config !== null && minimums !== undefined) {
+      const application = live().find((candidate) => candidate.id === config[1]);
+      if (application === undefined) return error(404, 'resource_not_found');
+      for (const [os, apps] of Object.entries(minimums)) {
+        const shows = `native_app_settings.minimum_supported_version.${os}`;
+        if (apps === null) {
+          if (config[3] === undefined) return error(422, 'config_validation_error');
+          application.environment[shows] = [];
+          continue;
+        }
+        for (const app of Object.keys(apps)) if (!application.registered.includes(`${os}.${app}`)) return error(422, 'config_validation_error');
+        application.environment[shows] = Object.entries(apps).map(([id, minimum]) => ({ bundle_id: id, minimum_version: minimum.minimum_version, update_url: minimum.update_url }));
+      }
+      return json(200, { config_version: '2026-10-05', dry_run: false, before: {}, after: {} });
+    }
     if (method === 'PATCH' && config !== null) {
       if (state.failConfigure > 0) {
         state.failConfigure -= 1;
@@ -191,7 +218,7 @@ export function fakeClerk(options: FakeClerkOptions = {}) {
       for (const [path, value] of Object.entries(state.storesInstead)) if (path in leaves) after = merged(after, nested(path, value));
       const named = (from: JsonObject): JsonObject => Object.fromEntries(Object.keys(sent).flatMap((key) => (key in from ? [[key, from[key]!]] : [])));
       const reordered = (value: Json): Json => (Array.isArray(value) ? [...value].sort().reverse() : typeof value === 'object' && value !== null ? Object.fromEntries(Object.entries(value).map(([key, child]) => [key, reordered(child)])) : value);
-      const answer = { config_version: '2026-10-05', dry_run: config[3] !== undefined, before: named(application.config), after: reordered(named(after)) };
+      const answer = { config_version: '2026-10-05', dry_run: path.includes('dry_run=true'), before: named(application.config), after: reordered(named(after)) };
       if (state.dropFromAfter !== null) {
         const [top, ...rest] = state.dropFromAfter.split('.');
         const pruned = structuredClone(answer.after) as Record<string, Record<string, Json>>;
@@ -200,7 +227,7 @@ export function fakeClerk(options: FakeClerkOptions = {}) {
         if (node !== undefined) delete node[rest.at(-1)!];
         answer.after = pruned;
       }
-      if (config[3] !== undefined) return json(200, answer);
+      if (path.includes('dry_run=true')) return json(200, answer);
       application.config = after;
       const set = configLeaves(after);
       for (const shown of SHOWN) {

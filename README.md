@@ -78,6 +78,8 @@ Clerk's servers apply a change at once, so a session task that the change requir
 
 When the test ends, pass or fail, the CLI puts each leaf back to the value it read before the change. If the test process stops before it restores them, the CLI restores them after e2e exits. If the CLI stops too, the next `run` or `up` restores them before it does anything else. `run.json` lists each change under `settings`, and `attach` refuses a run that left a change unrestored.
 
+To test an update screen, call `host.useMinimumAppVersion({ minimumVersion, updateUrl })`. It registers the app under test with the instance, sets its minimum, and waits until the public `/v1/environment` shows it. When the test ends, pass or fail, the CLI deletes the minimum and leaves the app registered. A later `run` or `up` deletes a minimum that a crash left behind.
+
 To find the name and current value of a leaf, run the `settings` verb with a prefix:
 
 ```sh

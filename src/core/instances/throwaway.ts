@@ -7,7 +7,7 @@ import type { InstanceKeys } from '../keys.ts';
 import { count } from '../state.ts';
 import { newEntryId, type Workspace } from '../workspace.ts';
 import { VerifyFailure, type ApplicationView, type InstanceView, type Json, type LedgerEntry, type ProcessRef, type PublishableKey } from '../types.ts';
-import type { SettingsRequest } from '../../../specs/support/types.ts';
+import type { MinimumVersionRequest, NativeAppPlatform, SettingsRequest } from '../../../specs/support/types.ts';
 import { deadlineOf, throwawayApplication, throwawayName, type AppRef, type Listing, type OpenWorkspace, type Platform } from './platform.ts';
 import {
   BASE_KEY,
@@ -15,6 +15,7 @@ import {
   SettingsNotShown,
   SettingsRefused,
   compareEnvironment,
+  isNativeAppPlatform,
   compareLeaves,
   configLeaves,
   describeDifference,
@@ -121,6 +122,7 @@ export interface Throwaway {
   ensure(progress: (line: string) => void): Promise<{ readonly views: readonly InstanceView[]; readonly created: HeldApplication | null }>;
   drive(): Promise<DrivenApplication>;
   change(request: SettingsRequest, at: string | null, progress: (line: string) => void): Promise<Changed>;
+  changeMinimumVersion(request: MinimumVersionRequest, at: string | null, progress: (line: string) => void): Promise<Changed>;
   restore(progress: (line: string) => void): Promise<readonly string[]>;
   stopDriving(): void;
   inspect(): Promise<Inspection | null>;
@@ -152,12 +154,18 @@ function readRecord(ledger: Workspace, name: string): InstanceRecord | null {
 
 const UNKNOWN: ApplicationState = { known: false, drivers: [] };
 
+const MINIMUM_VERSIONS_KEY = 'native_app_minimum_versions';
+const minimumVersionShown = (os: NativeAppPlatform): string => `native_app_settings.minimum_supported_version.${os}`;
+const pendingNames = (pending: Snapshot): readonly string[] => [...Object.keys(pending.config), ...(pending.minimumVersions ?? []).map((os) => `${MINIMUM_VERSIONS_KEY}.${os}`)];
+
 const isLeaves = (value: unknown): value is Leaves => typeof value === 'object' && value !== null && !Array.isArray(value);
 
 function snapshotOf(raw: unknown): Snapshot | null | undefined {
   if (raw === null) return null;
-  const { config, sections, environment } = (raw ?? {}) as { config?: unknown; sections?: unknown; environment?: unknown };
-  return isLeaves(config) && isLeaves(sections) && isLeaves(environment) ? { config, sections, environment } : undefined;
+  const { config, sections, environment, minimumVersions } = (raw ?? {}) as { config?: unknown; sections?: unknown; environment?: unknown; minimumVersions?: unknown };
+  if (!isLeaves(config) || !isLeaves(sections) || !isLeaves(environment)) return undefined;
+  if (minimumVersions === undefined) return { config, sections, environment };
+  return Array.isArray(minimumVersions) && minimumVersions.every(isNativeAppPlatform) ? { config, sections, environment, minimumVersions } : undefined;
 }
 
 function readState(ledger: Workspace, name: string): ApplicationState {
@@ -417,22 +425,48 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
     return { changed, shown };
   }
 
+  async function changeMinimumVersion(app: Held, request: MinimumVersionRequest, at: string | null, progress: (line: string) => void): Promise<Changed> {
+    const id = app.record.application;
+    const where = at ?? 'host.useMinimumAppVersion';
+    const { platform: os, id: appId } = request.app;
+    const leaf = `${MINIMUM_VERSIONS_KEY}.${os}.${appId}.minimum_version`;
+    const state = readState(workspace, app.entry.name);
+    if (!state.known) throw new VerifyFailure('INSTANCE_MISCONFIGURED', `what ${id} is on is not recorded, so a change to it could not be put back`, '{cli} up replaces it');
+    const open = await platform.open();
+    const before = await shownLeaves(app);
+    await open.registerNativeApp(refOf(app), request.app);
+    writeState(workspace, app.entry.name, { ...state, pending: underneath(state.pending, { config: {}, sections: {}, environment: {}, minimumVersions: [os] }) });
+    const started = now();
+    await open.configure(refOf(app), { [MINIMUM_VERSIONS_KEY]: { [os]: { [appId]: { minimum_version: request.minimumVersion, update_url: request.updateUrl } } } }).catch((error: unknown) => {
+      throw error instanceof SettingsRefused ? new SettingsRefused(`${where} asks for ${leaf}=${JSON.stringify(request.minimumVersion)}, and Clerk's Platform API refused it: ${error.said}`, 'correct the version or the URL: Clerk says what is wrong above', { param: error.param, said: error.said }) : error;
+    });
+    const shows = `${minimumVersionShown(os)}[0].minimum_version`;
+    const shown = await waitShown(app, { [shows]: request.minimumVersion }, before, (unmet) => new SettingsNotShown(`${where} set ${leaf}=${JSON.stringify(request.minimumVersion)} on ${id}, and ${seconds(SHOWN_WITHIN_MS, 0)} later the public environment did not show it: ${unmet}`, 'run it again; if it fails again, the instance may not have the native_app_force_update flag'));
+    progress(`settings ${leaf}=${JSON.stringify(request.minimumVersion)}  on ${id} for ${where}; the environment showed ${shows} ${seconds(now() - started, 1)} later`);
+    return { changed: [{ leaf, from: before[shows] ?? null, to: request.minimumVersion }], shown };
+  }
+
   async function restore(app: Held, progress: (line: string) => void): Promise<readonly string[]> {
     const state = readState(workspace, app.entry.name);
     if (!state.known || state.pending === null) return [];
     const { pending } = state;
     const open = await platform.open();
     const id = app.record.application;
-    const leaves = Object.keys(pending.config);
+    const leaves = pendingNames(pending);
     const before = await shownLeaves(app);
+    const minimums = pending.minimumVersions ?? [];
+    if (minimums.length > 0) await open.configure(refOf(app), { [MINIMUM_VERSIONS_KEY]: Object.fromEntries(minimums.map((os) => [os, null])) }, { destructive: true });
     // Clerk moves other leaves of a section when one changes back: turning organizations on turns forced selection on.
     const written = { ...pending.sections, ...pending.config };
-    const answer = await open.configure(refOf(app), nest(written));
-    const stored = configLeaves(answer.after);
-    const lost = Object.keys(written).find((leaf) => written[leaf] !== REDACTED && !sameLeaf(stored[leaf], written[leaf]));
-    if (lost !== undefined) throw new SettingsRefused(`Clerk accepted ${lost}=${JSON.stringify(written[lost])} to restore ${id}, and its answer holds ${JSON.stringify(stored[lost] ?? null)}`, '{cli} up replaces the application');
-    const expected = Object.keys(pending.environment).length === 0 ? null : pending.environment;
-    await waitShown(app, expected, before, (unmet) => new SettingsNotShown(`${id} was put back to ${assigned(leaves.map((leaf) => ({ leaf, to: pending.config[leaf]! })))}, and ${seconds(SHOWN_WITHIN_MS, 0)} later the environment does not show what it showed before: ${unmet}`, '{cli} up replaces the application'));
+    if (Object.keys(written).length > 0) {
+      const answer = await open.configure(refOf(app), nest(written));
+      const stored = configLeaves(answer.after);
+      const lost = Object.keys(written).find((leaf) => written[leaf] !== REDACTED && !sameLeaf(stored[leaf], written[leaf]));
+      if (lost !== undefined) throw new SettingsRefused(`Clerk accepted ${lost}=${JSON.stringify(written[lost])} to restore ${id}, and its answer holds ${JSON.stringify(stored[lost] ?? null)}`, '{cli} up replaces the application');
+    }
+    const shownBack = { ...pending.environment, ...Object.fromEntries(minimums.map((os) => [minimumVersionShown(os), []])) };
+    const expected = Object.keys(shownBack).length === 0 ? null : shownBack;
+    await waitShown(app, expected, before, (unmet) => new SettingsNotShown(`${id} was put back to ${listed(leaves)}, and ${seconds(SHOWN_WITHIN_MS, 0)} later the environment does not show what it showed before: ${unmet}`, '{cli} up replaces the application'));
     writeState(workspace, app.entry.name, { ...state, pending: null });
     progress(`settings restored ${listed(leaves)} on ${id}`);
     return leaves;
@@ -490,7 +524,7 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
     const users = await deps.clerk(() => keys).userCount();
     if (users >= REPLACE_AT_USERS) return { retire: `it holds ${users} of the ${DEVELOPMENT_USER_LIMIT} users a development instance allows` };
     if (!state.known) return { retire: `what it is on is not recorded, and a test may have changed settings ${STANDARD_FILE} does not name` };
-    if (state.pending !== null) return { restore: `a run ended without restoring ${listed(Object.keys(state.pending.config))}`, state };
+    if (state.pending !== null) return { restore: `a run ended without restoring ${listed(pendingNames(state.pending))}`, state };
     return drift(state, live.json);
   }
 
@@ -592,6 +626,12 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
       return change(app, request, at, progress);
     },
 
+    changeMinimumVersion(request, at, progress) {
+      const app = pool().held;
+      if (app === null) throw new VerifyFailure('NOT_READY', 'this worktree holds no application to change', '{cli} up');
+      return changeMinimumVersion(app, request, at, progress);
+    },
+
     async restore(progress) {
       const app = pool().held;
       return app === null ? [] : restore(app, progress);
@@ -606,7 +646,7 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
       const wanted = (leaf: string): boolean => prefixes.length === 0 || prefixes.some((prefix) => leaf === prefix || leaf.startsWith(`${prefix}.`));
       return {
         application: { id: app.record.application, name: app.entry.name },
-        pending: state.known ? Object.keys(state.pending?.config ?? {}) : null,
+        pending: state.known ? (state.pending === null ? [] : pendingNames(state.pending)) : null,
         config: Object.fromEntries(Object.entries(config).filter(([leaf]) => wanted(leaf)).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
       };
     },

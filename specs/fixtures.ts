@@ -4,7 +4,7 @@ import { test as base } from '@e2e-dev/mobile';
 import { expect, type Locator } from 'e2e';
 import { resolvePackageBinaryFromModule } from '../src/core/tools.ts';
 import { busyWaits, onceTheRunnerIsFree, type BusyWait } from './support/busy-runner.ts';
-import { aboutToLaunch, callSiteOf, restoreSettings, testUsers, useSettings } from './support/clerk.ts';
+import { aboutToLaunch, callSiteOf, restoreSettings, testUsers, useMinimumAppVersion, useSettings } from './support/clerk.ts';
 import { ASSERTION_TIMEOUT_MS } from './support/config.ts';
 import { agentDevice, deviceCommand } from './support/device.ts';
 import { EVIDENCE_PACE, evidenceBlock, tapMarker } from './support/evidence.ts';
@@ -161,6 +161,10 @@ export function createTest(testApp: TestApp) {
         async useSettings(request) {
           usedSettings = true;
           await useSettings(clerk.access, request, callSiteOf(new Error().stack));
+        },
+        async useMinimumAppVersion(options) {
+          usedSettings = true;
+          await useMinimumAppVersion(clerk.access, { ...options, app: { platform, id: appId } }, callSiteOf(new Error().stack));
         },
       };
       try {

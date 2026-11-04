@@ -25,7 +25,7 @@ import { runIdParts } from '../../specs/support/inputs.ts';
 import { protect } from '../../specs/support/secret.ts';
 import { ownKeyRefused, userLimitReached } from './clerk.ts';
 import type { Driving } from './instances/instances.ts';
-import { SettingsNotShown, SettingsRefused, parseSettingsRequest } from './instances/settings.ts';
+import { SettingsNotShown, SettingsRefused, parseMinimumVersionRequest, parseSettingsRequest } from './instances/settings.ts';
 import type { InstanceKeys } from './keys.ts';
 import { newEntryId, type Workspace } from './workspace.ts';
 import { VerifyFailure, type RunId, type ScratchPath, type TestEmail } from './types.ts';
@@ -38,7 +38,7 @@ export interface BrokerDeps {
   readonly keys: () => InstanceKeys;
   readonly fetch: typeof fetch;
   readonly beforeLaunch: () => Promise<void>;
-  readonly settings: Pick<Driving, 'useSettings' | 'restore'>;
+  readonly settings: Pick<Driving, 'useSettings' | 'useMinimumAppVersion' | 'restore'>;
 }
 
 export interface Broker {
@@ -293,6 +293,11 @@ export async function startBroker(run: RunId, workspace: Workspace, scratch: Scr
       const parsed = parseSettingsRequest(body);
       if ('refused' in parsed) return refused(parsed.refused);
       return settled(() => deps.settings.useSettings(parsed.request, parsed.at));
+    },
+    async useMinimumAppVersion(body) {
+      const parsed = parseMinimumVersionRequest(body);
+      if ('refused' in parsed) return refused(parsed.refused);
+      return settled(() => deps.settings.useMinimumAppVersion(parsed.request, parsed.at));
     },
     async restoreSettings(body) {
       if (Object.keys(body).length > 0) return refused(`it carries ${Object.keys(body).join(', ')}, and a restore carries nothing`);

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { SettingLeaves, SettingsRequest } from '../../../specs/support/types.ts';
+import type { MinimumVersionRequest, NativeAppPlatform, SettingLeaves, SettingsRequest } from '../../../specs/support/types.ts';
 import { VerifyFailure, type Json } from '../types.ts';
 
 export type Leaves = Readonly<Record<string, Json>>;
@@ -30,6 +30,8 @@ export interface Snapshot {
   readonly config: Leaves;
   readonly sections: Leaves;
   readonly environment: Leaves;
+  /** The platforms whose minimum app versions a test set. Their names hold dots, so they are not leaves, and a restore deletes them. */
+  readonly minimumVersions?: readonly NativeAppPlatform[];
 }
 
 export class SettingsNotShown extends VerifyFailure {
@@ -119,10 +121,16 @@ export function nest(leaves: Leaves): JsonObject {
   return root;
 }
 
-export const underneath = (pending: Snapshot | null, more: Snapshot): Snapshot =>
-  pending === null
-    ? more
-    : { config: { ...more.config, ...pending.config }, sections: { ...more.sections, ...pending.sections }, environment: { ...more.environment, ...pending.environment } };
+export const underneath = (pending: Snapshot | null, more: Snapshot): Snapshot => {
+  if (pending === null) return more;
+  const minimumVersions = [...new Set([...(pending.minimumVersions ?? []), ...(more.minimumVersions ?? [])])];
+  return {
+    config: { ...more.config, ...pending.config },
+    sections: { ...more.sections, ...pending.sections },
+    environment: { ...more.environment, ...pending.environment },
+    ...(minimumVersions.length === 0 ? {} : { minimumVersions }),
+  };
+};
 
 const CONFIG_LEAF = /^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$/;
 const ENVIRONMENT_LEAF = /^[A-Za-z0-9_]+(\[\d+\])*(\.[A-Za-z0-9_]+(\[\d+\])*)*$/;
@@ -152,4 +160,22 @@ export function parseSettingsRequest(body: Readonly<Record<string, unknown>>): {
   if (typeof environment === 'string') return { refused: environment };
   const at = typeof body.at === 'string' && SPEC_SITE.test(body.at) ? body.at : null;
   return { request: { config, ...(environment === undefined ? {} : { environment }) }, at };
+}
+
+const NATIVE_APP_ID = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$/;
+const APP_VERSION = /^\d+(\.\d+){0,2}$/;
+
+export const isNativeAppPlatform = (value: unknown): value is NativeAppPlatform => value === 'ios' || value === 'android';
+
+export function parseMinimumVersionRequest(body: Readonly<Record<string, unknown>>): { readonly request: MinimumVersionRequest; readonly at: string | null } | { readonly refused: string } {
+  const extra = Object.keys(body).filter((key) => !['app', 'minimumVersion', 'updateUrl', 'at'].includes(key));
+  if (extra.length > 0) return { refused: `it carries ${extra.join(', ')}, and host.useMinimumAppVersion sends only app, minimumVersion, updateUrl, and at` };
+  const { platform, id } = (body.app ?? {}) as { platform?: unknown; id?: unknown };
+  if (!isNativeAppPlatform(platform)) return { refused: `app.platform is ${JSON.stringify(platform)}, not ios or android` };
+  if (typeof id !== 'string' || !NATIVE_APP_ID.test(id)) return { refused: `app.id is ${JSON.stringify(id)}, not a bundle ID or a package name` };
+  const { minimumVersion, updateUrl } = body;
+  if (typeof minimumVersion !== 'string' || !APP_VERSION.test(minimumVersion)) return { refused: `minimumVersion is ${JSON.stringify(minimumVersion)}, not a version such as 2.0` };
+  if (typeof updateUrl !== 'string' || !/^https?:\/\/\S+$/.test(updateUrl)) return { refused: `updateUrl is ${JSON.stringify(updateUrl)}, not an http or https URL` };
+  const at = typeof body.at === 'string' && SPEC_SITE.test(body.at) ? body.at : null;
+  return { request: { app: { platform, id }, minimumVersion, updateUrl }, at };
 }

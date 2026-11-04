@@ -107,6 +107,25 @@ export interface SettingsRequest {
   readonly environment?: SettingLeaves;
 }
 
+export type NativeAppPlatform = 'ios' | 'android';
+
+export interface NativeAppRef {
+  readonly platform: NativeAppPlatform;
+  /** The iOS bundle ID or the Android package name. */
+  readonly id: string;
+}
+
+export interface MinimumVersionOptions {
+  /** The lowest version of the app that Clerk lets through. */
+  readonly minimumVersion: string;
+  /** The http or https page that the update screen links to. */
+  readonly updateUrl: string;
+}
+
+export interface MinimumVersionRequest extends MinimumVersionOptions {
+  readonly app: NativeAppRef;
+}
+
 export interface HostFixture {
   readonly runId: RunId;
   readonly app: AppLocators;
@@ -126,4 +145,6 @@ export interface HostFixture {
   evidence<T>(label: string, body: () => Promise<T>): Promise<T>;
   /** Changes instance settings for the rest of the test. When the test ends, pass or fail, the CLI puts back the values it read before the change. */
   useSettings(request: SettingsRequest): Promise<void>;
+  /** Registers the app under test with the instance and requires this version of it for the rest of the test. When the test ends, pass or fail, the CLI removes the minimum. */
+  useMinimumAppVersion(options: MinimumVersionOptions): Promise<void>;
 }

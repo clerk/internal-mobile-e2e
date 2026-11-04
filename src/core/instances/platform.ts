@@ -1,6 +1,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import { sleep as defaultSleep, type Runner } from '../exec.ts';
 import { Secret } from '../../../specs/support/secret.ts';
+import type { NativeAppRef } from '../../../specs/support/types.ts';
 import { VerifyFailure, type Brand, type Json, type PublishableKey } from '../types.ts';
 import { SettingsRefused } from './settings.ts';
 
@@ -27,6 +28,8 @@ const REFERENCED_ITEM = 'the 1Password item the reference names';
 
 const PLATFORM_API = 'https://api.clerk.com/v1/platform';
 const SECRET_KEY_SCOPE = 'application_secret_keys:read';
+// Clerk stores it for the app's associated domains, which no simulator run uses. It only has to have ten characters.
+const APP_ID_PREFIX = 'ABCDE12345';
 const NEEDED_SCOPES = ['applications:read', 'applications:manage', 'applications:delete', SECRET_KEY_SCOPE] as const;
 const listed = (names: readonly string[]): string => new Intl.ListFormat('en', { type: 'conjunction' }).format(names);
 const scopesNamed = (scopes: readonly string[]): string => `the scope${scopes.length === 1 ? '' : 's'} ${listed(scopes)}`;
@@ -87,7 +90,8 @@ export interface OpenWorkspace {
   readonly opened: Listing;
   list(): Promise<Listing>;
   create(name: string): Promise<CreatedApplication>;
-  configure(created: AppRef, config: JsonObject, options?: { readonly dryRun?: boolean }): Promise<{ readonly before: JsonObject; readonly after: JsonObject }>;
+  configure(created: AppRef, config: JsonObject, options?: { readonly dryRun?: boolean; readonly destructive?: boolean }): Promise<{ readonly before: JsonObject; readonly after: JsonObject }>;
+  registerNativeApp(created: AppRef, app: NativeAppRef): Promise<void>;
   readConfig(created: AppRef, keys: readonly string[]): Promise<JsonObject>;
   delete(application: ThrowawayApplication): Promise<void>;
 }
@@ -405,7 +409,8 @@ export function createPlatform(deps: PlatformDeps): Platform {
         };
       },
       async configure(created, config, options = {}) {
-        const answer = await send(key, 'PATCH', `${configPath(created)}${options.dryRun === true ? '?dry_run=true' : ''}`, config);
+        const query = new URLSearchParams([...(options.dryRun === true ? [['dry_run', 'true']] : []), ...(options.destructive === true ? [['destructive', 'true']] : [])]);
+        const answer = await send(key, 'PATCH', `${configPath(created)}${query.size === 0 ? '' : `?${query}`}`, config);
         if (answer.status === 200) {
           const { before, after } = objectOf(answer.json);
           return { before: objectOf(before), after: objectOf(after) };
@@ -417,6 +422,12 @@ export function createPlatform(deps: PlatformDeps): Platform {
         const what = param === null ? said(answer) : `${param} (${said(answer)})`;
         const refusal = { param, said: message === null ? what : `${what}: ${message}` };
         throw new SettingsRefused(`Clerk's Platform API refused the config of ${created.application.name}: ${refusal.said}`, 'run `{cli} doctor`', refusal);
+      },
+      async registerNativeApp(created, app) {
+        const path = `/applications/${created.application.id}/instances/${created.instanceId}/native_applications/${app.platform}`;
+        const answer = await send(key, 'POST', path, app.platform === 'ios' ? { bundle_id: app.id, app_id_prefix: APP_ID_PREFIX } : { package_name: app.id, namespace: 'android_app' });
+        if (answer.status === 200 || answer.codes.includes('form_identifier_exists')) return;
+        throw refused(answer, `registering ${app.id} with ${created.application.name}`);
       },
       async readConfig(created, keys) {
         const query = new URLSearchParams(keys.map((name) => ['keys', name]));

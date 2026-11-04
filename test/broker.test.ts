@@ -5,7 +5,7 @@ import net from 'node:net';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { TEST_PHONES, aboutToLaunch, callSiteOf, isOrganizationNameOf, restoreSettings, useSettings, isTestDomainOf, isTestEmailOf, organizationName, testDomain, testEmail, testUsers } from '../specs/support/clerk.ts';
+import { TEST_PHONES, aboutToLaunch, callSiteOf, isOrganizationNameOf, restoreSettings, useMinimumAppVersion, useSettings, isTestDomainOf, isTestEmailOf, organizationName, testDomain, testEmail, testUsers } from '../specs/support/clerk.ts';
 import { runIdParts } from '../specs/support/inputs.ts';
 import { runNames } from '../specs/support/names.ts';
 import { Secret, usedSecretValues } from '../specs/support/secret.ts';
@@ -28,7 +28,7 @@ interface Forwarded {
 
 type Clerk = (request: Forwarded) => { readonly status: number; readonly body: unknown };
 
-const NO_SETTINGS: BrokerDeps['settings'] = { useSettings: async () => assert.fail('this test changes no settings'), restore: async () => undefined };
+const NO_SETTINGS: BrokerDeps['settings'] = { useSettings: async () => assert.fail('this test changes no settings'), useMinimumAppVersion: async () => assert.fail('this test changes no settings'), restore: async () => undefined };
 
 let minted = 0;
 
@@ -539,6 +539,11 @@ describe("the CLI's routes that change an instance's settings", () => {
         if (failWith !== null) throw failWith;
         return { changed: [{ leaf: 'auth_multi_factor.required_for_sign_up', from: false, to: true }], shown: ['user_settings.sign_up.mfa.required'] };
       },
+      async useMinimumAppVersion(request, at) {
+        calls.push(['minimum', request, at]);
+        if (failWith !== null) throw failWith;
+        return { changed: [{ leaf: 'native_app_minimum_versions.ios.com.clerk.E2EHost.minimum_version', from: null, to: '2.0' }], shown: ['native_app_settings.minimum_supported_version.ios[0].minimum_version'] };
+      },
       async restore() {
         calls.push(['restore']);
       },
@@ -562,6 +567,33 @@ describe("the CLI's routes that change an instance's settings", () => {
       assert.equal(JSON.stringify(answer.json).includes(SECRET_KEY), false);
       assert.deepEqual(s.forwarded, [], 'nothing reaches the Backend API');
     });
+  });
+
+  it('hands a minimum app version to the CLI, and refuses a malformed one before the CLI sees it', async () => {
+    const { calls, settings } = recordingSettings();
+    const s = await standIn(emptyClerk, undefined, settings);
+    const MINIMUM = { app: { platform: 'ios', id: 'com.clerk.E2EHost' }, minimumVersion: '2.0', updateUrl: 'https://apps.apple.com/app/id1' } as const;
+    await stopping(s.broker, async () => {
+      assert.equal((await s.ask('POST', '/use_minimum_app_version', MINIMUM, 'not-the-token')).status, 401);
+      await useMinimumAppVersion(s.access, MINIMUM, AT);
+      assert.deepEqual(calls, [['minimum', MINIMUM, AT]]);
+      const bodies: readonly [unknown, RegExp][] = [
+        [{ ...MINIMUM, secret_key: 'x' }, /it carries secret_key/],
+        [{ ...MINIMUM, app: { platform: 'web', id: 'com.clerk.E2EHost' } }, /app\.platform is .{0,2}web/],
+        [{ ...MINIMUM, app: { platform: 'ios', id: 'not an id' } }, /app\.id is .{0,2}not an id/],
+        [{ ...MINIMUM, minimumVersion: 'latest' }, /minimumVersion is .{0,2}latest/],
+        [{ ...MINIMUM, minimumVersion: '1.2.3.4' }, /minimumVersion is .{0,2}1\.2\.3\.4/],
+        [{ ...MINIMUM, updateUrl: 'itms-apps://x' }, /updateUrl is .{0,2}itms-apps/],
+      ];
+      for (const [body, said] of bodies) {
+        const answer = await s.ask('POST', '/use_minimum_app_version', body);
+        assert.equal(answer.status, 403, JSON.stringify(body));
+        assert.match(JSON.stringify(answer.json), said);
+      }
+      assert.equal(calls.length, 1, 'a refused request changes nothing');
+    });
+    const byHand = { kind: 'secret-key', key: new Secret('clerk-secret-key', SECRET_KEY) } as const;
+    await assert.rejects(useMinimumAppVersion(byHand, MINIMUM, null), /host\.useMinimumAppVersion needs the verify CLI/);
   });
 
   it('refuses a malformed request before the CLI sees it', async () => {

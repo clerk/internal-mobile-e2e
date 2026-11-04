@@ -5,7 +5,7 @@ import { runIdParts, type ClerkAccess, type ClerkInstance } from './inputs.ts';
 import { PASSWORD_WORDS, runNames, type RunNames } from './names.ts';
 import { SHORTEST_SECRET, Secret, protect } from './secret.ts';
 import { commandsFor } from './typing.ts';
-import type { EmailOptions, OrganizationSeed, RunId, SecretLike, SeedOptions, SeededOrganization, SeededUser, SettingsRequest, TestEmail, TestPhone } from './types.ts';
+import type { EmailOptions, OrganizationSeed, RunId, SecretLike, SeedOptions, SeededOrganization, SeededUser, MinimumVersionRequest, SettingsRequest, TestEmail, TestPhone } from './types.ts';
 
 export const BACKEND_API_URL = 'https://api.clerk.com/v1';
 
@@ -43,6 +43,7 @@ export const SYSTEM_PERMISSIONS = { query: 'org:sys_', limit: '100' } as const;
 export const CLI_CALLS = {
   aboutToLaunch: { method: 'POST', path: '/about_to_launch' },
   useSettings: { method: 'POST', path: '/use_settings' },
+  useMinimumAppVersion: { method: 'POST', path: '/use_minimum_app_version' },
   restoreSettings: { method: 'POST', path: '/restore_settings' },
 } as const;
 
@@ -175,6 +176,12 @@ export async function aboutToLaunch(access: ClerkAccess, fetchImpl: typeof fetch
 export async function useSettings(access: ClerkAccess, request: SettingsRequest, at: string | null, fetchImpl: typeof fetch = fetch): Promise<void> {
   if (access.kind !== 'stand-in') throw new Error("host.useSettings needs the verify CLI, which holds the Platform API key that changes an instance's settings; run the spec with the CLI's run verb");
   const refused = await askTheCli(access, 'useSettings', { ...request, at }, SETTINGS_TIMEOUT_MS, fetchImpl);
+  if (refused !== null) throw new Error(refused);
+}
+
+export async function useMinimumAppVersion(access: ClerkAccess, request: MinimumVersionRequest, at: string | null, fetchImpl: typeof fetch = fetch): Promise<void> {
+  if (access.kind !== 'stand-in') throw new Error("host.useMinimumAppVersion needs the verify CLI, which holds the Platform API key that registers an app and sets its minimum; run the spec with the CLI");
+  const refused = await askTheCli(access, 'useMinimumAppVersion', { ...request, at }, SETTINGS_TIMEOUT_MS, fetchImpl);
   if (refused !== null) throw new Error(refused);
 }
 
