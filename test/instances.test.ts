@@ -978,6 +978,8 @@ describe('changing settings in a test', () => {
       const lines: string[] = [];
       await w.instances.stopDriving();
       await driving.release();
+      const before = await w.instances.doctorChecks({ live: false }, quiet);
+      assert.match(before.find((c) => c.id === 'settings')!.detail, /native_app_minimum_versions\.ios/, 'doctor names the minimum that a crash left behind');
       await w.instances.ensure((line) => lines.push(line));
       assert.deepEqual(shownLeaf(w, SHOWS), []);
       assert.ok(lines.some((line) => line.includes('native_app_minimum_versions.ios')), lines.join('\n'));

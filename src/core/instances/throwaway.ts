@@ -261,7 +261,7 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
     }
     return { pk: app.record.publishableKey, sk: await sk };
   }
-  const standingOf = (state: ApplicationState): Standing => (!state.known ? { kind: 'unknown' } : state.pending === null ? { kind: 'standard' } : { kind: 'changed', leaves: Object.keys(state.pending.config) });
+  const standingOf = (state: ApplicationState): Standing => (!state.known ? { kind: 'unknown' } : state.pending === null ? { kind: 'standard' } : { kind: 'changed', leaves: pendingNames(state.pending) });
   const describe = (app: Held, state: ApplicationState): HeldApplication => ({ id: app.record.application, name: app.entry.name, standing: standingOf(state), keys: () => keysOf(app) });
   const otherDrivers = (state: ApplicationState): readonly ProcessRef[] => state.drivers.filter((driver) => driver.pid !== self.pid && deps.isRunning(driver));
 

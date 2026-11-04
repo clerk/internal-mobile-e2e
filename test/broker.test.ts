@@ -584,6 +584,8 @@ describe("the CLI's routes that change an instance's settings", () => {
         [{ ...MINIMUM, minimumVersion: 'latest' }, /minimumVersion is .{0,2}latest/],
         [{ ...MINIMUM, minimumVersion: '1.2.3.4' }, /minimumVersion is .{0,2}1\.2\.3\.4/],
         [{ ...MINIMUM, updateUrl: 'itms-apps://x' }, /updateUrl is .{0,2}itms-apps/],
+        [{ ...MINIMUM, app: { platform: 'android', id: 'com.clerk.e2e' }, minimumVersion: '2.0' }, /minimumVersion is .{0,2}2\.0.{0,2}, not a whole version code/],
+        [{ ...MINIMUM, app: { platform: 'android', id: 'com.clerk.e2e' }, minimumVersion: '0' }, /minimumVersion is .{0,2}0.{0,2}, not a whole version code/],
       ];
       for (const [body, said] of bodies) {
         const answer = await s.ask('POST', '/use_minimum_app_version', body);
@@ -591,6 +593,9 @@ describe("the CLI's routes that change an instance's settings", () => {
         assert.match(JSON.stringify(answer.json), said);
       }
       assert.equal(calls.length, 1, 'a refused request changes nothing');
+      const ANDROID = { ...MINIMUM, app: { platform: 'android', id: 'com.clerk.e2e' }, minimumVersion: '42' } as const;
+      await useMinimumAppVersion(s.access, ANDROID, AT);
+      assert.deepEqual(calls[1], ['minimum', ANDROID, AT]);
     });
     const byHand = { kind: 'secret-key', key: new Secret('clerk-secret-key', SECRET_KEY) } as const;
     await assert.rejects(useMinimumAppVersion(byHand, MINIMUM, null), /host\.useMinimumAppVersion needs the verify CLI/);

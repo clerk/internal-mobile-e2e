@@ -163,7 +163,11 @@ export function parseSettingsRequest(body: Readonly<Record<string, unknown>>): {
 }
 
 const NATIVE_APP_ID = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$/;
-const APP_VERSION = /^\d+(\.\d+){0,2}$/;
+// The patterns of clerk_go's api/shared/nativeapplications/versions.go, so a bad version fails here and names the spec's value.
+const APP_VERSION = {
+  ios: { pattern: /^\d+(\.\d+){0,2}$/, example: 'a version such as 2.0' },
+  android: { pattern: /^[1-9]\d*$/, example: 'a whole version code such as 42' },
+} as const satisfies Record<NativeAppPlatform, { readonly pattern: RegExp; readonly example: string }>;
 
 export const isNativeAppPlatform = (value: unknown): value is NativeAppPlatform => value === 'ios' || value === 'android';
 
@@ -174,7 +178,7 @@ export function parseMinimumVersionRequest(body: Readonly<Record<string, unknown
   if (!isNativeAppPlatform(platform)) return { refused: `app.platform is ${JSON.stringify(platform)}, not ios or android` };
   if (typeof id !== 'string' || !NATIVE_APP_ID.test(id)) return { refused: `app.id is ${JSON.stringify(id)}, not a bundle ID or a package name` };
   const { minimumVersion, updateUrl } = body;
-  if (typeof minimumVersion !== 'string' || !APP_VERSION.test(minimumVersion)) return { refused: `minimumVersion is ${JSON.stringify(minimumVersion)}, not a version such as 2.0` };
+  if (typeof minimumVersion !== 'string' || !APP_VERSION[platform].pattern.test(minimumVersion)) return { refused: `minimumVersion is ${JSON.stringify(minimumVersion)}, not ${APP_VERSION[platform].example}` };
   if (typeof updateUrl !== 'string' || !/^https?:\/\/\S+$/.test(updateUrl)) return { refused: `updateUrl is ${JSON.stringify(updateUrl)}, not an http or https URL` };
   const at = typeof body.at === 'string' && SPEC_SITE.test(body.at) ? body.at : null;
   return { request: { app: { platform, id }, minimumVersion, updateUrl }, at };

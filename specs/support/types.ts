@@ -116,7 +116,7 @@ export interface NativeAppRef {
 }
 
 export interface MinimumVersionOptions {
-  /** The lowest version of the app that Clerk lets through. */
+  /** The lowest version of the app that Clerk lets through: on iOS a version such as 2.0, on Android a whole version code such as 42. */
   readonly minimumVersion: string;
   /** The http or https page that the update screen links to. */
   readonly updateUrl: string;
