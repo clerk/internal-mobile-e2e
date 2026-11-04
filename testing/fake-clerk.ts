@@ -190,6 +190,7 @@ export function fakeClerk(options: FakeClerkOptions = {}) {
       if (application === undefined) return error(404, 'resource_not_found');
       for (const [os, apps] of Object.entries(minimums)) {
         const shows = `native_app_settings.minimum_supported_version.${os}`;
+        if (lagging?.application === application && lagging.leaf === shows) lagging = null;
         if (apps === null) {
           if (config[3] === undefined) return error(422, 'config_validation_error');
           application.environment[shows] = [];

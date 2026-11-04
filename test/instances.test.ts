@@ -970,6 +970,16 @@ describe('changing settings in a test', () => {
       assert.deepEqual(shownLeaf(w, SHOWS), [{ bundle_id: 'com.clerk.E2EHost', minimum_version: '2.0', update_url: 'https://apps.apple.com/app/id2' }]);
     });
 
+    it('keeps a deleted minimum deleted when it had not shown yet', async () => {
+      const w = world();
+      const driving = await driven(w);
+      w.clerk.state.minimumShownAfterReads = 40;
+      await assert.rejects(driving.useMinimumAppVersion(MINIMUM, null), /did not show it/);
+      await driving.restore();
+      for (let reads = 0; reads < 50; reads += 1) await driving.stillStandard();
+      assert.deepEqual(shownLeaf(w, SHOWS), []);
+    });
+
     it('registers an Android app by its package name, and sets and deletes its minimum', async () => {
       const w = world();
       const driving = await driven(w);
