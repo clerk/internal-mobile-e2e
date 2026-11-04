@@ -937,7 +937,7 @@ describe('changing settings in a test', () => {
       const w = world();
       const driving = await driven(w);
       const made = await driving.useMinimumAppVersion(MINIMUM, SETUP_MFA);
-      assert.deepEqual(made, { changed: [{ leaf: LEAF, from: null, to: '2.0' }], shown: [`${SHOWS}[0].minimum_version`] });
+      assert.deepEqual(made, { changed: [{ leaf: LEAF, from: null, to: '2.0' }], shown: [`${SHOWS}[0].minimum_version`, `${SHOWS}[0].update_url`] });
       assert.deepEqual(w.clerk.live()[0]!.registered, ['ios.com.clerk.E2EHost']);
       assert.deepEqual(shownLeaf(w, SHOWS), [{ bundle_id: 'com.clerk.E2EHost', minimum_version: '2.0', update_url: MINIMUM.updateUrl }]);
       assert.deepEqual((stateOf(w, w.clerk.live()[0]!.name).pending as { minimumVersions?: unknown } | null)?.minimumVersions, ['ios'], 'the state file says what to delete, before a crash can lose it');
@@ -959,6 +959,15 @@ describe('changing settings in a test', () => {
       await driving.useMinimumAppVersion(MINIMUM, null);
       assert.deepEqual(w.clerk.live()[0]!.registered, ['ios.com.clerk.E2EHost']);
       await driving.restore();
+    });
+
+    it('waits for a changed update URL to show when the minimum stays the same', async () => {
+      const w = world();
+      const driving = await driven(w);
+      await driving.useMinimumAppVersion(MINIMUM, null);
+      w.clerk.state.minimumShownAfterReads = 2;
+      await driving.useMinimumAppVersion({ ...MINIMUM, updateUrl: 'https://apps.apple.com/app/id2' }, null);
+      assert.deepEqual(shownLeaf(w, SHOWS), [{ bundle_id: 'com.clerk.E2EHost', minimum_version: '2.0', update_url: 'https://apps.apple.com/app/id2' }]);
     });
 
     it('restores a minimum and a setting that one test changed together', async () => {

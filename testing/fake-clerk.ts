@@ -87,6 +87,7 @@ export function fakeClerk(options: FakeClerkOptions = {}) {
   const requests: { readonly method: string; readonly url: string; readonly authorization: string | null; readonly body: unknown }[] = [];
   let counter = 0;
   let rateLimited: { left: number; retryAfter: string | null } = { left: 0, retryAfter: null };
+  let lagging: { readonly application: FakeApplication; readonly leaf: string; readonly value: Json; reads: number } | null = null;
   const state = {
     listShape: 'array' as 'array' | 'envelope' | 'unreadable',
     pageSize: 2,
@@ -97,6 +98,7 @@ export function fakeClerk(options: FakeClerkOptions = {}) {
     refuseInstanceKeys: false,
     scopes: PLATFORM_SCOPES as readonly string[] | undefined,
     ignoreConfigKey: null as string | null,
+    minimumShownAfterReads: 0,
     refusals: [] as FakeRefusal[],
     alsoMoves: {} as Record<string, Json>,
     dropFromAfter: null as string | null,
@@ -194,7 +196,9 @@ export function fakeClerk(options: FakeClerkOptions = {}) {
           continue;
         }
         for (const app of Object.keys(apps)) if (!application.registered.includes(`${os}.${app}`)) return error(422, 'config_validation_error');
-        application.environment[shows] = Object.entries(apps).map(([id, minimum]) => ({ bundle_id: id, minimum_version: minimum.minimum_version, update_url: minimum.update_url }));
+        const shown = Object.entries(apps).map(([id, minimum]) => ({ bundle_id: id, minimum_version: minimum.minimum_version, update_url: minimum.update_url }));
+        if (state.minimumShownAfterReads > 0) lagging = { application, leaf: shows, value: shown, reads: state.minimumShownAfterReads };
+        else application.environment[shows] = shown;
       }
       return json(200, { config_version: '2026-10-05', dry_run: false, before: {}, after: {} });
     }
@@ -278,6 +282,10 @@ export function fakeClerk(options: FakeClerkOptions = {}) {
     }
     const application = applications.find((candidate) => `${Buffer.from(candidate.pk.slice('pk_test_'.length), 'base64url').toString().replace(/\$$/, '')}` === url.host);
     if (application === undefined || application.deleted) return error(404, 'resource_not_found');
+    if (lagging !== null && lagging.application === application && (lagging.reads -= 1) < 0) {
+      application.environment[lagging.leaf] = lagging.value;
+      lagging = null;
+    }
     return json(200, unflatten(application.environment));
   }) as typeof fetch;
 

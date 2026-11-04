@@ -441,7 +441,7 @@ export function createThrowaway(deps: ThrowawayDeps): Throwaway {
       throw error instanceof SettingsRefused ? new SettingsRefused(`${where} asks for ${leaf}=${JSON.stringify(request.minimumVersion)}, and Clerk's Platform API refused it: ${error.said}`, 'correct the version or the URL: Clerk says what is wrong above', { param: error.param, said: error.said }) : error;
     });
     const shows = `${minimumVersionShown(os)}[0].minimum_version`;
-    const shown = await waitShown(app, { [shows]: request.minimumVersion }, before, (unmet) => new SettingsNotShown(`${where} set ${leaf}=${JSON.stringify(request.minimumVersion)} on ${id}, and ${seconds(SHOWN_WITHIN_MS, 0)} later the public environment did not show it: ${unmet}`, 'run it again; if it fails again, the instance may not have the native_app_force_update flag'));
+    const shown = await waitShown(app, { [shows]: request.minimumVersion, [`${minimumVersionShown(os)}[0].update_url`]: request.updateUrl }, before, (unmet) => new SettingsNotShown(`${where} set ${leaf}=${JSON.stringify(request.minimumVersion)} on ${id}, and ${seconds(SHOWN_WITHIN_MS, 0)} later the public environment did not show it: ${unmet}`, 'run it again; if it fails again, the instance may not have the native_app_force_update flag'));
     progress(`settings ${leaf}=${JSON.stringify(request.minimumVersion)}  on ${id} for ${where}; the environment showed ${shows} ${seconds(now() - started, 1)} later`);
     return { changed: [{ leaf, from: before[shows] ?? null, to: request.minimumVersion }], shown };
   }
