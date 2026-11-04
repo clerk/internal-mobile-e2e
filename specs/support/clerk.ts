@@ -180,7 +180,7 @@ export async function useSettings(access: ClerkAccess, request: SettingsRequest,
 }
 
 export async function useMinimumAppVersion(access: ClerkAccess, request: MinimumVersionRequest, at: string | null, fetchImpl: typeof fetch = fetch): Promise<void> {
-  if (access.kind !== 'stand-in') throw new Error("host.useMinimumAppVersion needs the verify CLI, which holds the Platform API key that registers an app and sets its minimum; run the spec with the CLI");
+  if (access.kind !== 'stand-in') throw new Error("host.useMinimumAppVersion needs the verify CLI, which holds the Platform API key that registers an app and sets its minimum; run the spec with the CLI's run verb");
   const refused = await askTheCli(access, 'useMinimumAppVersion', { ...request, at }, SETTINGS_TIMEOUT_MS, fetchImpl);
   if (refused !== null) throw new Error(refused);
 }

@@ -569,36 +569,50 @@ describe("the CLI's routes that change an instance's settings", () => {
     });
   });
 
-  it('hands a minimum app version to the CLI, and refuses a malformed one before the CLI sees it', async () => {
+  const MINIMUM = { app: { platform: 'ios', id: 'com.clerk.E2EHost' }, minimumVersion: '2.0', updateUrl: 'https://apps.apple.com/app/id1' } as const;
+  const ANDROID_APP = { platform: 'android', id: 'com.clerk.e2e' } as const;
+
+  it('hands a minimum app version to the CLI only with the run token', async () => {
     const { calls, settings } = recordingSettings();
     const s = await standIn(emptyClerk, undefined, settings);
-    const MINIMUM = { app: { platform: 'ios', id: 'com.clerk.E2EHost' }, minimumVersion: '2.0', updateUrl: 'https://apps.apple.com/app/id1' } as const;
     await stopping(s.broker, async () => {
       assert.equal((await s.ask('POST', '/use_minimum_app_version', MINIMUM, 'not-the-token')).status, 401);
+      assert.deepEqual(calls, [], 'a process without the run token changes nothing');
+      const android = { ...MINIMUM, app: ANDROID_APP, minimumVersion: '42' };
       await useMinimumAppVersion(s.access, MINIMUM, AT);
-      assert.deepEqual(calls, [['minimum', MINIMUM, AT]]);
-      const bodies: readonly [unknown, RegExp][] = [
-        [{ ...MINIMUM, secret_key: 'x' }, /it carries secret_key/],
-        [{ ...MINIMUM, app: { platform: 'web', id: 'com.clerk.E2EHost' } }, /app\.platform is .{0,2}web/],
-        [{ ...MINIMUM, app: { platform: 'ios', id: 'not an id' } }, /app\.id is .{0,2}not an id/],
-        [{ ...MINIMUM, minimumVersion: 'latest' }, /minimumVersion is .{0,2}latest/],
-        [{ ...MINIMUM, minimumVersion: '1.2.3.4' }, /minimumVersion is .{0,2}1\.2\.3\.4/],
-        [{ ...MINIMUM, updateUrl: 'itms-apps://x' }, /updateUrl is .{0,2}itms-apps/],
-        [{ ...MINIMUM, app: { platform: 'android', id: 'com.clerk.e2e' }, minimumVersion: '2.0' }, /minimumVersion is .{0,2}2\.0.{0,2}, not a whole version code/],
-        [{ ...MINIMUM, app: { platform: 'android', id: 'com.clerk.e2e' }, minimumVersion: '0' }, /minimumVersion is .{0,2}0.{0,2}, not a whole version code/],
-      ];
-      for (const [body, said] of bodies) {
-        const answer = await s.ask('POST', '/use_minimum_app_version', body);
-        assert.equal(answer.status, 403, JSON.stringify(body));
-        assert.match(JSON.stringify(answer.json), said);
-      }
-      assert.equal(calls.length, 1, 'a refused request changes nothing');
-      const ANDROID = { ...MINIMUM, app: { platform: 'android', id: 'com.clerk.e2e' }, minimumVersion: '42' } as const;
-      await useMinimumAppVersion(s.access, ANDROID, AT);
-      assert.deepEqual(calls[1], ['minimum', ANDROID, AT]);
+      await useMinimumAppVersion(s.access, android, null);
+      assert.deepEqual(calls, [['minimum', MINIMUM, AT], ['minimum', android, null]]);
     });
+  });
+
+  it('refuses a malformed minimum app version before the CLI sees it', async () => {
+    const { calls, settings } = recordingSettings();
+    const s = await standIn(emptyClerk, undefined, settings);
+    await stopping(s.broker, async () => {
+      const bodies: readonly [unknown, string][] = [
+        [{ ...MINIMUM, secret_key: 'x' }, 'it carries secret_key, and host.useMinimumAppVersion sends only app, minimumVersion, updateUrl, and at'],
+        [{ ...MINIMUM, app: { platform: 'web', id: 'com.clerk.E2EHost' } }, 'app.platform is "web", not ios or android'],
+        [{ ...MINIMUM, app: { platform: 'ios', id: 'not an id' } }, 'app.id is "not an id", not a bundle ID or a package name'],
+        [{ ...MINIMUM, minimumVersion: 'latest' }, 'minimumVersion is "latest", not a version such as 2.0'],
+        [{ ...MINIMUM, minimumVersion: '1.2.3.4' }, 'minimumVersion is "1.2.3.4", not a version such as 2.0'],
+        [{ ...MINIMUM, updateUrl: 'itms-apps://x' }, 'updateUrl is "itms-apps://x", not an http or https URL'],
+        [{ ...MINIMUM, app: ANDROID_APP, minimumVersion: '2.0' }, 'minimumVersion is "2.0", not a whole version code such as 42'],
+        [{ ...MINIMUM, app: ANDROID_APP, minimumVersion: '0' }, 'minimumVersion is "0", not a whole version code such as 42'],
+      ];
+      for (const [body, why] of bodies) {
+        const answer = await s.ask('POST', '/use_minimum_app_version', body);
+        assert.deepEqual([answer.status, answer.json.errors?.[0]?.code, whyRefused(answer)], [403, 'verify_stand_in_refused', `the verify CLI's stand-in for the Backend API refused this request: ${why}`]);
+      }
+      assert.deepEqual(calls, []);
+    });
+  });
+
+  it('refuses a minimum app version in a run by hand, which has a secret key and no CLI', async () => {
+    const asked: string[] = [];
+    const recording = (async (url: string | URL) => (asked.push(String(url)), new Response('{}'))) as typeof fetch;
     const byHand = { kind: 'secret-key', key: new Secret('clerk-secret-key', SECRET_KEY) } as const;
-    await assert.rejects(useMinimumAppVersion(byHand, MINIMUM, null), /host\.useMinimumAppVersion needs the verify CLI/);
+    await assert.rejects(useMinimumAppVersion(byHand, MINIMUM, null, recording), /host\.useMinimumAppVersion needs the verify CLI, which holds the Platform API key/);
+    assert.deepEqual(asked, []);
   });
 
   it('refuses a malformed request before the CLI sees it', async () => {

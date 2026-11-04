@@ -420,7 +420,7 @@ export function createPlatform(deps: PlatformDeps): Platform {
         if (answer.status < 400 || answer.status >= 500 || answer.status === 429 || (param === null && NOT_ABOUT_THE_BODY.has(answer.status))) throw refused(answer, `configuring ${created.application.name}`);
         const message = typeof first?.long_message === 'string' ? first.long_message : typeof first?.message === 'string' ? first.message : null;
         const what = param === null ? said(answer) : `${param} (${said(answer)})`;
-        const refusal = { param, said: message === null ? what : `${what}: ${message}` };
+        const refusal = { param, said: message === null ? what : `${what}: ${message}`, codes: answer.codes };
         throw new SettingsRefused(`Clerk's Platform API refused the config of ${created.application.name}: ${refusal.said}`, 'run `{cli} doctor`', refusal);
       },
       async registerNativeApp(created, app) {

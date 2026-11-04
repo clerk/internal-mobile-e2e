@@ -185,24 +185,6 @@ export function fakeClerk(options: FakeClerkOptions = {}) {
     }
     const config = /^\/applications\/([^/]+)\/instances\/([^/?]+)\/config(?:\?dry_run=true)?(\?destructive=true)?$/.exec(path);
     const minimums = (body as { readonly native_app_minimum_versions?: Readonly<Record<string, Readonly<Record<string, { readonly minimum_version: string; readonly update_url: string }>> | null>> } | null)?.native_app_minimum_versions;
-    if (method === 'PATCH' && config !== null && minimums !== undefined) {
-      const application = live().find((candidate) => candidate.id === config[1]);
-      if (application === undefined) return error(404, 'resource_not_found');
-      for (const [os, apps] of Object.entries(minimums)) {
-        const shows = `native_app_settings.minimum_supported_version.${os}`;
-        if (lagging?.application === application && lagging.leaf === shows) lagging = null;
-        if (apps === null) {
-          if (config[3] === undefined) return error(422, 'config_validation_error');
-          application.environment[shows] = [];
-          continue;
-        }
-        for (const app of Object.keys(apps)) if (!application.registered.includes(`${os}.${app}`)) return error(422, 'config_validation_error');
-        const shown = Object.entries(apps).map(([id, minimum]) => ({ [os === 'ios' ? 'bundle_id' : 'package_name']: id, minimum_version: minimum.minimum_version, update_url: minimum.update_url }));
-        if (state.minimumShownAfterReads > 0) lagging = { application, leaf: shows, value: shown, reads: state.minimumShownAfterReads };
-        else application.environment[shows] = shown;
-      }
-      return json(200, { config_version: '2026-10-05', dry_run: false, before: {}, after: {} });
-    }
     if (method === 'PATCH' && config !== null) {
       if (state.failConfigure > 0) {
         state.failConfigure -= 1;
@@ -216,6 +198,22 @@ export function fakeClerk(options: FakeClerkOptions = {}) {
       if (refusal !== undefined) {
         const named = refusal.param === undefined ? [undefined] : [refusal.param].flat();
         return json(refusal.status, { errors: named.map((param) => ({ code: refusal.code, message: refusal.message, long_message: refusal.message, ...(param === undefined ? {} : { meta: { param_name: param } }) })) });
+      }
+      if (minimums !== undefined) {
+        for (const [os, apps] of Object.entries(minimums)) {
+          const shows = `native_app_settings.minimum_supported_version.${os}`;
+          if (lagging?.application === application && lagging.leaf === shows) lagging = null;
+          if (apps === null) {
+            if (config[3] === undefined) return error(422, 'config_validation_error');
+            application.environment[shows] = [];
+            continue;
+          }
+          for (const app of Object.keys(apps)) if (!application.registered.includes(`${os}.${app}`)) return error(422, 'config_validation_error');
+          const shown = Object.entries(apps).map(([id, minimum]) => ({ [os === 'ios' ? 'bundle_id' : 'package_name']: id, minimum_version: minimum.minimum_version, update_url: minimum.update_url }));
+          if (state.minimumShownAfterReads > 0) lagging = { application, leaf: shows, value: shown, reads: state.minimumShownAfterReads };
+          else application.environment[shows] = shown;
+        }
+        return json(200, { config_version: '2026-10-05', dry_run: false, before: {}, after: {} });
       }
       let after = merged(application.config, sent);
       const turnsOrganizationsOn = leaves['organization_settings.enabled'] === true && configLeaves(application.config)['organization_settings.enabled'] === false;

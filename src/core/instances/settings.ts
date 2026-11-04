@@ -2,8 +2,9 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { MinimumVersionRequest, NativeAppPlatform, SettingLeaves, SettingsRequest } from '../../../specs/support/types.ts';
+import type { MinimumVersionRequest, Platform, SettingLeaves, SettingsRequest } from '../../../specs/support/types.ts';
 import { VerifyFailure, type Json } from '../types.ts';
+import { isPlatform } from '../workspace.ts';
 
 export type Leaves = Readonly<Record<string, Json>>;
 
@@ -31,7 +32,7 @@ export interface Snapshot {
   readonly sections: Leaves;
   readonly environment: Leaves;
   /** The platforms whose minimum app versions a test set. Their names hold dots, so they are not leaves, and a restore deletes them. */
-  readonly minimumVersions?: readonly NativeAppPlatform[];
+  readonly minimumVersions?: readonly Platform[];
 }
 
 export class SettingsNotShown extends VerifyFailure {
@@ -43,10 +44,12 @@ export class SettingsNotShown extends VerifyFailure {
 export class SettingsRefused extends VerifyFailure {
   readonly param: string | null;
   readonly said: string;
-  constructor(message: string, fix: string, refusal: { readonly param: string | null; readonly said: string } = { param: null, said: message }) {
+  readonly codes: readonly string[];
+  constructor(message: string, fix: string, refusal: { readonly param: string | null; readonly said: string; readonly codes?: readonly string[] } = { param: null, said: message }) {
     super('INSTANCE_MISCONFIGURED', message, fix);
     this.param = refusal.param;
     this.said = refusal.said;
+    this.codes = refusal.codes ?? [];
   }
 }
 
@@ -167,15 +170,13 @@ const NATIVE_APP_ID = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$/;
 const APP_VERSION = {
   ios: { pattern: /^\d+(\.\d+){0,2}$/, example: 'a version such as 2.0' },
   android: { pattern: /^[1-9]\d*$/, example: 'a whole version code such as 42' },
-} as const satisfies Record<NativeAppPlatform, { readonly pattern: RegExp; readonly example: string }>;
-
-export const isNativeAppPlatform = (value: unknown): value is NativeAppPlatform => value === 'ios' || value === 'android';
+} as const satisfies Record<Platform, { readonly pattern: RegExp; readonly example: string }>;
 
 export function parseMinimumVersionRequest(body: Readonly<Record<string, unknown>>): { readonly request: MinimumVersionRequest; readonly at: string | null } | { readonly refused: string } {
   const extra = Object.keys(body).filter((key) => !['app', 'minimumVersion', 'updateUrl', 'at'].includes(key));
   if (extra.length > 0) return { refused: `it carries ${extra.join(', ')}, and host.useMinimumAppVersion sends only app, minimumVersion, updateUrl, and at` };
   const { platform, id } = (body.app ?? {}) as { platform?: unknown; id?: unknown };
-  if (!isNativeAppPlatform(platform)) return { refused: `app.platform is ${JSON.stringify(platform)}, not ios or android` };
+  if (!isPlatform(platform)) return { refused: `app.platform is ${JSON.stringify(platform)}, not ios or android` };
   if (typeof id !== 'string' || !NATIVE_APP_ID.test(id)) return { refused: `app.id is ${JSON.stringify(id)}, not a bundle ID or a package name` };
   const { minimumVersion, updateUrl } = body;
   if (typeof minimumVersion !== 'string' || !APP_VERSION[platform].pattern.test(minimumVersion)) return { refused: `minimumVersion is ${JSON.stringify(minimumVersion)}, not ${APP_VERSION[platform].example}` };

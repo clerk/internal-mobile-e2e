@@ -107,10 +107,8 @@ export interface SettingsRequest {
   readonly environment?: SettingLeaves;
 }
 
-export type NativeAppPlatform = 'ios' | 'android';
-
 export interface NativeAppRef {
-  readonly platform: NativeAppPlatform;
+  readonly platform: Platform;
   /** The iOS bundle ID or the Android package name. */
   readonly id: string;
 }

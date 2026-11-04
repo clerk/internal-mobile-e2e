@@ -70,7 +70,7 @@ export function parseRunId(value: string): RunId {
   return value;
 }
 
-function isPlatform(value: unknown): value is Platform {
+export function isPlatform(value: unknown): value is Platform {
   return value === 'ios' || value === 'android';
 }
 

@@ -932,12 +932,13 @@ describe('changing settings in a test', () => {
     const SHOWS = 'native_app_settings.minimum_supported_version.ios';
     const MINIMUM = { app: { platform: 'ios', id: 'com.clerk.E2EHost' }, minimumVersion: '2.0', updateUrl: 'https://apps.apple.com/app/id1' } as const;
     const LEAF = 'native_app_minimum_versions.ios.com.clerk.E2EHost.minimum_version';
+    const URL_LEAF = 'native_app_minimum_versions.ios.com.clerk.E2EHost.update_url';
 
     it('registers the app, sets the minimum, and deletes it when the test ends', async () => {
       const w = world();
       const driving = await driven(w);
       const made = await driving.useMinimumAppVersion(MINIMUM, SETUP_MFA);
-      assert.deepEqual(made, { changed: [{ leaf: LEAF, from: null, to: '2.0' }], shown: [`${SHOWS}[0].minimum_version`, `${SHOWS}[0].update_url`] });
+      assert.deepEqual(made, { changed: [{ leaf: LEAF, from: null, to: '2.0' }, { leaf: URL_LEAF, from: null, to: MINIMUM.updateUrl }], shown: [`${SHOWS}[0].minimum_version`, `${SHOWS}[0].update_url`] });
       assert.deepEqual(w.clerk.live()[0]!.registered, ['ios.com.clerk.E2EHost']);
       assert.deepEqual(shownLeaf(w, SHOWS), [{ bundle_id: 'com.clerk.E2EHost', minimum_version: '2.0', update_url: MINIMUM.updateUrl }]);
       assert.deepEqual((stateOf(w, w.clerk.live()[0]!.name).pending as { minimumVersions?: unknown } | null)?.minimumVersions, ['ios'], 'the state file says what to delete, before a crash can lose it');
@@ -966,7 +967,8 @@ describe('changing settings in a test', () => {
       const driving = await driven(w);
       await driving.useMinimumAppVersion(MINIMUM, null);
       w.clerk.state.minimumShownAfterReads = 2;
-      await driving.useMinimumAppVersion({ ...MINIMUM, updateUrl: 'https://apps.apple.com/app/id2' }, null);
+      const made = await driving.useMinimumAppVersion({ ...MINIMUM, updateUrl: 'https://apps.apple.com/app/id2' }, null);
+      assert.deepEqual(made.changed, [{ leaf: URL_LEAF, from: MINIMUM.updateUrl, to: 'https://apps.apple.com/app/id2' }], 'only the URL moved');
       assert.deepEqual(shownLeaf(w, SHOWS), [{ bundle_id: 'com.clerk.E2EHost', minimum_version: '2.0', update_url: 'https://apps.apple.com/app/id2' }]);
     });
 
@@ -974,10 +976,23 @@ describe('changing settings in a test', () => {
       const w = world();
       const driving = await driven(w);
       w.clerk.state.minimumShownAfterReads = 40;
-      await assert.rejects(driving.useMinimumAppVersion(MINIMUM, null), /did not show it/);
+      await assert.rejects(driving.useMinimumAppVersion(MINIMUM, null), /does not show it/);
       await driving.restore();
       for (let reads = 0; reads < 50; reads += 1) await driving.stillStandard();
       assert.deepEqual(shownLeaf(w, SHOWS), []);
+    });
+
+    it('names the flag when Clerk refuses a minimum because the flag is off, and still restores', async () => {
+      const w = world();
+      const driving = await driven(w);
+      w.clerk.state.refusals.push({ path: LEAF, status: 403, code: 'feature_not_enabled', param: 'native_app_minimum_versions', message: 'This feature is not enabled on this instance' });
+      await assert.rejects(driving.useMinimumAppVersion(MINIMUM, SETUP_MFA), (error: VerifyFailure) => {
+        assert.match(error.message, /feature_not_enabled/);
+        assert.match(error.fix, /native_app_force_update flag is off/);
+        return true;
+      });
+      await driving.restore();
+      assert.equal(pendingOf(w), null);
     });
 
     it('registers an Android app by its package name, and sets and deletes its minimum', async () => {
@@ -989,6 +1004,27 @@ describe('changing settings in a test', () => {
       assert.deepEqual(shownLeaf(w, shows), [{ package_name: 'com.clerk.e2e', minimum_version: '42', update_url: 'https://play.google.com/store/apps/details?id=com.clerk.e2e' }]);
       await driving.restore();
       assert.deepEqual(shownLeaf(w, shows), []);
+    });
+
+    it('changes nothing and says so when the minimum and the URL are already on', async () => {
+      const w = world();
+      const driving = await driven(w);
+      await driving.useMinimumAppVersion(MINIMUM, null);
+      const made = await driving.useMinimumAppVersion(MINIMUM, SETUP_MFA);
+      assert.deepEqual(made, { changed: [], shown: [] });
+      assert.ok(w.lines.some((line) => line.includes(`already on ${w.clerk.live()[0]!.id}, for ${SETUP_MFA}`)), w.lines.join('\n'));
+      assert.equal(driving.changes()[1]!.restored, true, 'nothing to restore for a call that changed nothing');
+    });
+
+    it('says what it put back when the environment does not show a restore', async () => {
+      const w = world();
+      const driving = await driven(w);
+      await driving.useMinimumAppVersion(MINIMUM, null);
+      await driving.useSettings({ config: { [REQUIRED]: true }, environment: { [SHOWS_REQUIRED]: true } }, null);
+      w.clerk.state.ignoreConfigKey = SHOWS_REQUIRED;
+      await assert.rejects(driving.restore(), new RegExp(`was put back to ${REQUIRED}=false and no minimum app version on ios, and`));
+      w.clerk.state.ignoreConfigKey = null;
+      await driving.restore();
     });
 
     it('restores a minimum and a setting that one test changed together', async () => {

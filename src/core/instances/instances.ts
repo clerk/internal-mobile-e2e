@@ -206,7 +206,7 @@ export function createInstances(deps: InstancesDeps): Instances {
         },
         async useMinimumAppVersion(request, at) {
           const made = await locked(() => throwaway.changeMinimumVersion(request, at, deps.progress));
-          changes = [...changes, { at, changed: made.changed, shown: made.shown, restored: false }];
+          changes = [...changes, { at, changed: made.changed, shown: made.shown, restored: made.changed.length === 0 }];
           return made;
         },
         async restore() {
