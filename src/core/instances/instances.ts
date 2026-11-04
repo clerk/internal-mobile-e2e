@@ -5,7 +5,7 @@ import { currentProcess, isRunning, sleep as defaultSleep, type Runner } from '.
 import type { InstanceKeys } from '../keys.ts';
 import { count } from '../state.ts';
 import { newEntryId, takeSlotLock, type Workspace } from '../workspace.ts';
-import type { SettingsRequest } from '../../../specs/support/types.ts';
+import type { MinimumVersionRequest, SettingsRequest } from '../../../specs/support/types.ts';
 import { VerifyFailure, type ApplicationView, type DoctorCheck, type InstanceView, type ProcessRef, type SettingsChangeRecord } from '../types.ts';
 import { createPlatform, describeCredential, type Platform } from './platform.ts';
 import { STANDARD_FILE, describeDifference } from './settings.ts';
@@ -15,6 +15,7 @@ export interface Driving {
   readonly keys: InstanceKeys;
   readonly instance: { readonly id: string; readonly name: string };
   useSettings(request: SettingsRequest, at: string | null): Promise<Changed>;
+  useMinimumAppVersion(request: MinimumVersionRequest, at: string | null): Promise<Changed>;
   restore(): Promise<void>;
   changes(): readonly SettingsChangeRecord[];
   stillStandard(): Promise<boolean>;
@@ -200,6 +201,11 @@ export function createInstances(deps: InstancesDeps): Instances {
         instance: { id: application.id, name: application.name },
         async useSettings(request, at) {
           const made = await locked(() => throwaway.change(request, at, deps.progress));
+          changes = [...changes, { at, changed: made.changed, shown: made.shown, restored: made.changed.length === 0 }];
+          return made;
+        },
+        async useMinimumAppVersion(request, at) {
+          const made = await locked(() => throwaway.changeMinimumVersion(request, at, deps.progress));
           changes = [...changes, { at, changed: made.changed, shown: made.shown, restored: made.changed.length === 0 }];
           return made;
         },

@@ -385,7 +385,7 @@ export async function runVerb(deps: Deps, command: Extract<Command, { verb: 'run
         beforeLaunch: async () => {
           if (command.video) await (recorder ??= startRecorder());
         },
-        settings: { useSettings: (request, at) => driven().useSettings(request, at), restore: () => driven().restore() },
+        settings: { useSettings: (request, at) => driven().useSettings(request, at), useMinimumAppVersion: (request, at) => driven().useMinimumAppVersion(request, at), restore: () => driven().restore() },
       });
 
       const evidenceMarks = command.video && !('all' in command.selection) ? (join(dir, EVIDENCE_MARKS_FILE) as EvidencePath) : null;
