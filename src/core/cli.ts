@@ -263,7 +263,13 @@ function render(value: VerbResult, packageDir: string): string[] {
       return lines;
     }
     case 'attach':
-      if (value.via === 'gh') return [`${value.alreadyPosted ? 'already posted' : 'posted'}  ${value.posted.map((p) => basename(p)).join(', ')}  in the description of ${value.prUrl}`];
+      if (value.via === 'gh') {
+        const { comment } = value;
+        return [
+          `${value.alreadyPosted ? 'already posted' : 'posted'}  ${value.posted.map((p) => basename(p)).join(', ')}  in the description of ${value.prUrl}`,
+          ...(comment === undefined ? [] : [comment.failure === null ? `commented  ${comment.body}` : `not commented  gh pr comment failed: ${comment.failure}. Post this comment on the PR yourself: ${comment.body}`]),
+        ];
+      }
       return [
         `handed off  ${value.handedOff.map((p) => basename(p)).join(', ')}  to the session's runner (${value.sessionRunUrl}), because ${value.because}`,
         `next        {cli} down ends the session; the verify-attach workflow then puts the evidence in the description of PR #${value.pr}`,

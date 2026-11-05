@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { basename, extname, join } from 'node:path';
 import { run as defaultRunner, type Runner } from './exec.ts';
 import type { Publishable, Showable } from './evidence.ts';
-import { VerifyFailure, everyFile, type AttachResult, type EvidenceBundle, type EvidencePath, type EvidenceSummary, type HostAdapter, type MediaChoice, type Platform } from './types.ts';
+import { VerifyFailure, everyFile, type AttachResult, type EvidenceBundle, type EvidenceComment, type EvidencePath, type EvidenceSummary, type HostAdapter, type MediaChoice, type Platform } from './types.ts';
 
 export function summarize(evidence: Showable): EvidenceSummary {
   return {
@@ -192,14 +192,21 @@ function uploadedIn(body: string, platform: Platform, run: string): readonly str
   return block === null || !block.includes(`\`${run}\``) ? [] : (block.match(UPLOADED) ?? []);
 }
 
-async function readDescription(runner: Runner, repo: string, pr: number): Promise<{ readonly body: string; readonly url: string }> {
-  const viewed = await runner('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', 'body,url,state']);
+async function readDescription(runner: Runner, repo: string, pr: number): Promise<{ readonly body: string; readonly url: string; readonly isDraft: boolean }> {
+  const viewed = await runner('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', 'body,url,state,isDraft']);
   if (viewed.code !== 0) throw new CannotPostHere('gh pr view failed', `gh pr view failed: ${viewed.stderr.trim()}`, 'check `gh auth status` and that the PR exists');
-  const parsed = JSON.parse(viewed.stdout) as { readonly body?: string | null; readonly url?: string; readonly state?: string };
+  const parsed = JSON.parse(viewed.stdout) as { readonly body?: string | null; readonly url?: string; readonly state?: string; readonly isDraft?: boolean };
   if (parsed.state !== 'OPEN') {
     throw new VerifyFailure('USAGE', `PR #${pr} of ${repo} is ${parsed.state?.toLowerCase() ?? 'not known to be open'}, and attach writes only to an open pull request`, `pass the number of an open pull request as --pr, or reopen PR #${pr}, then rerun {cli} attach`);
   }
-  return { body: parsed.body ?? '', url: parsed.url ?? '' };
+  return { body: parsed.body ?? '', url: parsed.url ?? '', isDraft: parsed.isDraft === true };
+}
+
+// The evidence is already in the description by now, so a comment that can't be posted is reported, and doesn't fail the attach.
+async function commentAfterEvidence(host: HostAdapter, pr: number, runner: Runner): Promise<EvidenceComment> {
+  const body = host.commentAfterEvidence!;
+  const sent = await runner('gh', ['pr', 'comment', String(pr), '--repo', host.githubRepo, '--body', body]);
+  return { body, failure: sent.code === 0 ? null : sent.stderr.trim() };
 }
 
 export async function postToPullRequest(bundle: EvidenceBundle, host: HostAdapter, runner: Runner = defaultRunner): Promise<AttachResult> {
@@ -252,7 +259,7 @@ export async function postToPullRequest(bundle: EvidenceBundle, host: HostAdapte
 
     const notLaidOut = (why: string): VerifyFailure =>
       new VerifyFailure('NOT_READY', `the files of run ${run} are in the description of PR #${pr} as a list, one under the other, and were not laid out: ${why}`, 'rerun {cli} attach once nobody is editing the description');
-    const listedNow = (await readDescription(runner, host.githubRepo, pr)).body;
+    const { body: listedNow, isDraft } = await readDescription(runner, host.githubRepo, pr);
     const uploaded = uploadedIn(listedNow, platform, run);
     if (uploaded.length !== files.length) throw notLaidOut(`the block there now does not show run ${run} with the ${files.length} addresses GitHub gave its files`);
     const laidOut = withEvidenceBlock(listedNow, platform, laidOutWith(uploaded));
@@ -260,7 +267,9 @@ export async function postToPullRequest(bundle: EvidenceBundle, host: HostAdapte
     const arranged = await edit(laidOut.body, []);
     if (arranged.code !== 0) throw notLaidOut(`gh pr edit failed: ${arranged.stderr.trim()}`);
 
-    return { verb: 'attach', via: 'gh', prUrl, posted: paths, alreadyPosted: false };
+    // A draft gets no review yet, and CodeRabbit reads the description when the pull request turns ready.
+    const comment = host.commentAfterEvidence === undefined || isDraft ? null : await commentAfterEvidence(host, pr, runner);
+    return { verb: 'attach', via: 'gh', prUrl, posted: paths, alreadyPosted: false, ...(comment === null ? {} : { comment }) };
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
