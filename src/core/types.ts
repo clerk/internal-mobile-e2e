@@ -207,8 +207,13 @@ export interface HandOffReceipt {
   readonly sessionRunUrl: string;
 }
 
+export interface EvidenceComment {
+  readonly body: string;
+  readonly failure: string | null;
+}
+
 export type AttachResult =
-  | { readonly verb: 'attach'; readonly via: 'gh'; readonly prUrl: string; readonly posted: readonly EvidencePath[]; readonly alreadyPosted: boolean }
+  | { readonly verb: 'attach'; readonly via: 'gh'; readonly prUrl: string; readonly posted: readonly EvidencePath[]; readonly alreadyPosted: boolean; readonly comment?: EvidenceComment }
   | ({ readonly verb: 'attach'; readonly via: 'runner'; readonly pr: number; readonly handedOff: readonly EvidencePath[]; readonly because: string } & HandOffReceipt);
 
 export type DownResult =
@@ -470,6 +475,8 @@ export interface HostAdapter {
   readonly cli: string;
   readonly platforms: readonly Platform[];
   readonly githubRepo: string;
+  /** `attach` posts this on a ready pull request after it changes the description, because a review bot does not reread an edited description by itself. */
+  readonly commentAfterEvidence?: string;
   appId(platform: Platform): string;
   buildInputs(platform: Platform, backend: BackendKind): readonly string[];
   build(platform: Platform, key: BuildKey, into: ScratchPath, progress: (line: string) => void): Promise<BuiltApp>;

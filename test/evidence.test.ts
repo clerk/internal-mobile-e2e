@@ -13,7 +13,8 @@ import { Secret } from '../specs/support/secret.ts';
 import { attach } from '../src/core/verbs.ts';
 import { newRunId } from '../specs/support/inputs.ts';
 import { openWorkspace } from '../src/core/workspace.ts';
-import type { BuildKey, EvidencePath, EvidenceRecord, EvidenceSummary, HostAdapter, RunId } from '../src/core/types.ts';
+import { createOutput } from '../src/core/cli.ts';
+import type { BuildKey, EvidencePath, EvidenceRecord, EvidenceSummary, HostAdapter, RunId, VerbResult } from '../src/core/types.ts';
 
 const OWN_USER = 'user_own';
 
@@ -325,9 +326,10 @@ describe('attach', () => {
     readonly attached: readonly string[];
   }
 
-  function fakeGh(options: { readonly ffmpeg?: Runner; readonly attachFlag?: boolean; readonly body?: string; readonly onView?: (views: number, pr: { body: string; state: string }) => void; readonly upload?: (reference: string, address: string) => string } = {}) {
+  function fakeGh(options: { readonly ffmpeg?: Runner; readonly attachFlag?: boolean; readonly body?: string; readonly onView?: (views: number, pr: { body: string; state: string }) => void; readonly upload?: (reference: string, address: string) => string; readonly isDraft?: boolean; readonly commentFails?: boolean } = {}) {
     const pr = { body: options.body ?? DESCRIPTION, state: 'OPEN' };
     const edits: Edit[] = [];
+    const comments: (readonly string[])[] = [];
     let views = 0;
     let uploads = 0;
     const runner: Runner = async (command, args, runOptions) => {
@@ -337,7 +339,11 @@ describe('attach', () => {
       if (args[1] === 'view') {
         views += 1;
         options.onView?.(views, pr);
-        return { code: 0, stdout: JSON.stringify({ body: pr.body, url: PR_URL, state: pr.state }), stderr: '' };
+        return { code: 0, stdout: JSON.stringify({ body: pr.body, url: PR_URL, state: pr.state, isDraft: options.isDraft === true }), stderr: '' };
+      }
+      if (args[1] === 'comment') {
+        comments.push(args);
+        return options.commentFails === true ? { code: 1, stdout: '', stderr: 'HTTP 403: nope\n' } : { code: 0, stdout: `${PR_URL}#issuecomment-1\n`, stderr: '' };
       }
       const bodyFile = readFileSync(args[args.indexOf('--body-file') + 1]!, 'utf8');
       const attached = args.filter((_, i) => args[i - 1] === '--attach').map((file) => readFileSync(join(runOptions!.cwd!, file), 'utf8'));
@@ -348,13 +354,13 @@ describe('attach', () => {
       });
       return { code: 0, stdout: `${PR_URL}\n`, stderr: '' };
     };
-    return { runner, pr, edits };
+    return { runner, pr, edits, comments };
   }
 
-  function checkout(gh: { readonly runner: Runner } = fakeGh()) {
+  function checkout(gh: { readonly runner: Runner } = fakeGh(), hostOptions: Partial<HostAdapter> = {}) {
     const packageDir = mkdtempSync(join(tmpdir(), 'verify-attach-'));
     const workspace = openWorkspace({ packageDir, worktree: packageDir, home: join(packageDir, 'home') });
-    const deps = { host, workspace, runner: gh.runner, env: {}, progress: () => undefined, instances: heldInstances() };
+    const deps = { host: { ...host, ...hostOptions }, workspace, runner: gh.runner, env: {}, progress: () => undefined, instances: heldInstances() };
     const sealed = (shape: { readonly called: string; readonly shots?: readonly string[]; readonly states?: readonly string[]; readonly spec?: string; readonly specs?: readonly string[]; readonly video?: boolean; readonly failed?: boolean; readonly failureShot?: boolean; readonly recordsTests?: boolean; readonly change?: Partial<EvidenceRecord>; readonly log?: string }) => {
       const { run, dir } = workspace.newRun();
       mkdirSync(join(dir, 'screenshots'), { recursive: true });
@@ -649,6 +655,60 @@ describe('attach', () => {
     assert.equal(layout!.bodyFile, gh.pr.body);
     assert.equal(existsSync(upload!.cwd!), false, 'the copies of the files and of the description are not kept');
     assert.deepEqual(result, { verb: 'attach', via: 'gh', prUrl: PR_URL, posted: [join(dir, 'screenshots', 'profile.png')], alreadyPosted: false });
+  });
+
+  describe('the comment after the evidence', () => {
+    const RECHECK = '@coderabbitai run pre-merge checks';
+    const printed = (result: VerbResult): readonly string[] => {
+      let out = '';
+      createOutput(false, '/tmp', 'bin/control-x', { write: (text: string) => (out += text) }, { write: () => true }).result(result);
+      return out.trimEnd().split('\n');
+    };
+
+    it('posts the host\'s comment on a ready pull request once the tables are written', async () => {
+      const gh = fakeGh();
+      const { deps, sealed } = checkout(gh, { commentAfterEvidence: RECHECK });
+      const result = await attach(deps, { verb: 'attach', run: sealed({ called: 'after' }).run, pr: 9, media: still, before: null });
+      assert.equal(gh.edits.length, 2);
+      assert.deepEqual(gh.comments, [['pr', 'comment', '9', '--repo', 'clerk/clerk-ios', '--body', RECHECK]]);
+      assert.deepEqual(result.verb === 'attach' && result.via === 'gh' ? result.comment : null, { body: RECHECK, failure: null });
+    });
+
+    it('posts nothing on a draft, for a host without a comment, or when the description already holds the evidence', async () => {
+      const draft = fakeGh({ isDraft: true });
+      const onDraft = checkout(draft, { commentAfterEvidence: RECHECK });
+      const draftResult = await attach(onDraft.deps, { verb: 'attach', run: onDraft.sealed({ called: 'after' }).run, pr: 9, media: still, before: null });
+      assert.deepEqual(draft.comments, []);
+      assert.equal('comment' in draftResult, false);
+
+      const silent = fakeGh();
+      const noComment = checkout(silent);
+      await attach(noComment.deps, { verb: 'attach', run: noComment.sealed({ called: 'after' }).run, pr: 9, media: still, before: null });
+      assert.deepEqual(silent.comments, []);
+
+      const repeated = fakeGh();
+      const again = checkout(repeated, { commentAfterEvidence: RECHECK });
+      const { run } = again.sealed({ called: 'after' });
+      await attach(again.deps, { verb: 'attach', run, pr: 9, media: still, before: null });
+      const second = await attach(again.deps, { verb: 'attach', run, pr: 9, media: still, before: null });
+      assert.equal(repeated.comments.length, 1);
+      assert.equal('comment' in second, false);
+    });
+
+    it('keeps the attach and reports the failure when the comment cannot be posted', async () => {
+      const gh = fakeGh({ commentFails: true });
+      const { deps, sealed } = checkout(gh, { commentAfterEvidence: RECHECK });
+      const result = await attach(deps, { verb: 'attach', run: sealed({ called: 'after' }).run, pr: 9, media: still, before: null });
+      assert.equal(gh.edits.length, 2);
+      assert.deepEqual(result.verb === 'attach' && result.via === 'gh' ? result.comment : null, { body: RECHECK, failure: 'HTTP 403: nope' });
+      assert.deepEqual(printed(result).slice(1), [`not commented  gh pr comment failed: HTTP 403: nope. Post this comment on the PR yourself: ${RECHECK}`]);
+    });
+
+    it('says what it commented', async () => {
+      const { deps, sealed } = checkout(fakeGh(), { commentAfterEvidence: RECHECK });
+      const result = await attach(deps, { verb: 'attach', run: sealed({ called: 'after' }).run, pr: 9, media: still, before: null });
+      assert.deepEqual(printed(result).slice(1), [`commented  ${RECHECK}`]);
+    });
   });
 
   it('leaves the list in the description and says so when the addresses of the files cannot be read back, or the block names another run by then', async () => {
