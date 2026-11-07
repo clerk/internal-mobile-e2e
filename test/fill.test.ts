@@ -2,7 +2,7 @@ import '../testing/git-env.ts';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { busyWaits } from '../specs/support/busy-runner.ts';
-import { fillField, type FillDevice, type NamedField } from '../specs/support/fill.ts';
+import { fillField, type FieldNode, type FillDevice, type NamedField } from '../specs/support/fill.ts';
 import type { Platform } from '../specs/support/types.ts';
 
 const BUSY = 'ENGINE_FAILURE: perform tap failed: the iOS automation runner is still finishing a command that overran its watchdog (session e2e-ios-0 on iPhone 17 Pro)';
@@ -35,7 +35,14 @@ function ticking(): Clock {
   return { now: () => at, wait: async () => void (at += 400) };
 }
 
-function form(runner: BusyRunner = {}, platform: Platform = 'ios', tapsUntilFocused = 1, screen: Screen = { texts: () => EMAIL_CODE_SCREEN }, clock: Clock = ticking()) {
+function form(
+  runner: BusyRunner = {},
+  platform: Platform = 'ios',
+  tapsUntilFocused = 1,
+  screen: Screen = { texts: () => EMAIL_CODE_SCREEN },
+  clock: Clock = ticking(),
+  sharingTheName: readonly FieldNode[] = [],
+) {
   const refusalsLeft = { tap: runner.tap ?? 0, read: runner.read ?? 0, type: runner.type ?? 0, replace: runner.replace ?? 0 };
   const calls: string[] = [];
   let held = '';
@@ -53,7 +60,7 @@ function form(runner: BusyRunner = {}, platform: Platform = 'ios', tapsUntilFocu
       step('tap', 'tap');
       focused = (tapsUntilFocused -= 1) <= 0;
     },
-    all: async () => [{ inputValue: async () => held, boundingBox: async () => frame }],
+    all: async () => [...sharingTheName, { inputValue: async () => held, boundingBox: async () => frame }],
   };
   const device: FillDevice = {
     platform,
@@ -129,6 +136,21 @@ describe('one host.fill', () => {
     await android.fill('424242', 6);
     assert.equal(android.held(), '424242');
     assert.deepEqual(android.calls.filter((call) => !call.startsWith('read')), ['tap', 'tap', 'type 424242']);
+  });
+
+  it('reads the named field past a node of the same name that has no value, such as the reveal button beside a password field', async () => {
+    const revealButton: FieldNode = {
+      inputValue: async () => {
+        throw new Error('ACTION_FAILED: Node is not an <input>, <textarea> or <select> element: getByTestId("clerk.auth.signUp.password")');
+      },
+      boundingBox: async () => ({ x: 230, y: 300, width: 40, height: 40 }),
+    };
+    let typings = 0;
+    const lostTheFirstLetter = (held: string): string => ((typings += 1) === 1 ? held.slice(1) : held);
+    const unfocused = form({}, 'ios', 2, { texts: () => EMAIL_CODE_SCREEN, afterTyping: lostTheFirstLetter }, ticking(), [revealButton]);
+    await unfocused.fill(CODE, 6);
+    assert.equal(unfocused.held(), CODE);
+    assert.ok(unfocused.calls.includes(`fill 120 320 ${CODE}`), 'the replacement goes to the middle of the named field, not of the button');
   });
 
   describe('when the field reads empty after the typing', () => {

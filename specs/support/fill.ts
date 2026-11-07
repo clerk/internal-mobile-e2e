@@ -1,4 +1,4 @@
-import { onceTheRunnerIsFree, type BusyWait } from './busy-runner.ts';
+import { isRunnerBusy, onceTheRunnerIsFree, type BusyWait } from './busy-runner.ts';
 import { tapOnceUncovered } from './tapping.ts';
 import { typeConfirmed } from './typing.ts';
 import type { Platform } from './types.ts';
@@ -39,6 +39,13 @@ export interface FillPace {
   wait(): Promise<unknown>;
 }
 
+// e2e's inputValue throws on a node whose role carries no value, such as a button that shares the field's test ID.
+const valueUnlessItHasNone = (node: FieldNode): Promise<string | null> =>
+  node.inputValue().catch((error: unknown) => {
+    if (isRunnerBusy(error)) throw error;
+    return null;
+  });
+
 // The iOS simulator's accessibility frames lag about a second behind typed text, so a tap resolved sooner lands where a control sat before the keyboard moved it.
 const IOS_FRAMES_SETTLE_AFTER_TYPING_MS = 1_500;
 
@@ -75,7 +82,8 @@ export async function fillField(field: NamedField, text: string, device: FillDev
         read(async () => {
           const values: string[] = [];
           for (const node of await field.all()) {
-            const value = await node.inputValue();
+            const value = await valueUnlessItHasNone(node);
+            if (value === null) continue;
             if (value !== '') namedInput = node;
             values.push(value);
           }
