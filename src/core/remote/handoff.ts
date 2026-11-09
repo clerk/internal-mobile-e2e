@@ -39,7 +39,7 @@ export interface HandoffBefore {
   readonly passed: number;
   readonly flaky: number;
   readonly total: number;
-  readonly files: readonly HandoffFile[];
+  readonly files: readonly (HandoffFile | null)[];
 }
 
 export interface HandoffManifest {
@@ -125,12 +125,21 @@ function parseBefore(value: unknown, run: unknown, files: readonly HandoffFile[]
     passed: whole(raw.passed, 0, HANDOFF_LIMITS.tests, 'passed of before'),
     flaky: whole(raw.flaky, 0, HANDOFF_LIMITS.tests, 'flaky of before'),
     total: whole(raw.total, 1, HANDOFF_LIMITS.tests, 'total of before'),
-    files: parseFiles(raw.files, 'the files of before'),
+    files: parseBeforeFiles(raw.files, files),
   };
   if (before.run === run) refuse('before is the run itself');
   if (before.passed + before.flaky > before.total) refuse('passed and flaky of before must count at most total');
-  if (before.files.length !== files.length || before.files.some((file, i) => isVideo(file.name) !== isVideo(files[i]!.name))) refuse('before must have one file for each file, of the same kind');
   return before;
+}
+
+function parseBeforeFiles(list: unknown, files: readonly HandoffFile[]): (HandoffFile | null)[] {
+  const entries: unknown[] = Array.isArray(list) ? list : [];
+  const present = parseFiles(Array.isArray(list) ? entries.filter((entry) => entry !== null) : list, 'the files of before');
+  let next = 0;
+  const paired = entries.map((entry) => (entry === null ? null : present[next++]!));
+  const unpaired = (file: HandoffFile | null, i: number): boolean => (file === null ? isVideo(files[i]!.name) : isVideo(file.name) !== isVideo(files[i]!.name));
+  if (paired.length !== files.length || paired.some(unpaired)) refuse('before must have one file for each file, of the same kind, or null for a screenshot of a new screen');
+  return paired;
 }
 
 export function parseHandoffManifest(text: string): HandoffManifest {

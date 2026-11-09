@@ -186,7 +186,7 @@ export interface EvidenceSummary {
   readonly total: number;
 }
 
-export type MediaChoice = { readonly kind: 'video' } | { readonly kind: 'screenshots'; readonly labels: readonly string[] };
+export type MediaChoice = { readonly kind: 'video' } | { readonly kind: 'screenshots'; readonly labels: readonly string[]; readonly newScreens?: readonly string[] };
 
 export interface EvidenceFile {
   readonly name: string;
@@ -197,10 +197,13 @@ export interface EvidenceBundle {
   readonly pr: number;
   readonly summary: EvidenceSummary;
   readonly files: readonly EvidenceFile[];
-  readonly before: { readonly summary: EvidenceSummary; readonly files: readonly EvidenceFile[] } | null;
+  readonly before: { readonly summary: EvidenceSummary; readonly files: readonly (EvidenceFile | null)[] } | null;
 }
 
-export const everyFile = <F>(evidence: { readonly files: readonly F[]; readonly before: { readonly files: readonly F[] } | null }): readonly F[] => [...evidence.files, ...(evidence.before?.files ?? [])];
+export const everyFile = <F extends object>(evidence: { readonly files: readonly F[]; readonly before: { readonly files: readonly (F | null)[] } | null }): readonly F[] => [
+  ...evidence.files,
+  ...(evidence.before?.files ?? []).filter((file): file is F => file !== null),
+];
 
 export interface HandOffReceipt {
   readonly sessionRun: string;

@@ -533,6 +533,43 @@ describe('attach', () => {
     ]);
   });
 
+  it('shows a new screen beside the screens that exist in one table, with New screen in its before cell, and uploads no before for it', async () => {
+    const gh = fakeGh();
+    const { deps, sealed } = checkout(gh);
+    const before = sealed({ called: 'before', failed: true, failureShot: true, shots: ['start', 'security'] });
+    const after = sealed({ called: 'after', shots: ['start', 'update', 'security'] });
+    const media = { kind: 'screenshots', labels: ['start', 'update', 'security'], newScreens: ['update'] } as const;
+    await attach(deps, { verb: 'attach', run: after.run, pr: 9, media, before: before.run });
+    assert.deepEqual(gh.edits[0]!.attached, ['after start', 'after update', 'after security', 'before start', 'before security']);
+    assert.equal(
+      gh.pr.body,
+      block(
+        `**Verified on an iOS simulator.** Run \`${after.run}\` on \`verify-ios-1\` at \`606639a63448\`, 1 of 1 passed. Before is run \`${before.run}\` at \`5e1263750651\`, 0 of 1 passed.`,
+        '',
+        '| Before | After |',
+        '| :---: | :---: |',
+        `| <img src="${asset(4)}" width="280" alt="Before: start"> | <img src="${asset(1)}" width="280" alt="After: start"> |`,
+        `| New screen | <img src="${asset(2)}" width="280" alt="After: update"> |`,
+        `| <img src="${asset(5)}" width="280" alt="Before: security"> | <img src="${asset(3)}" width="280" alt="After: security"> |`,
+      ),
+    );
+    const again = await attach(deps, { verb: 'attach', run: after.run, pr: 9, media, before: before.run });
+    assert.equal(again.verb === 'attach' && again.via === 'gh' && again.alreadyPosted, true);
+  });
+
+  it('posts nothing for a --new-screen whose label the before run has, and says to pass it as --screenshot', async () => {
+    const gh = fakeGh();
+    const { deps, sealed } = checkout(gh);
+    const before = sealed({ called: 'before', shots: ['start', 'update'] });
+    const after = sealed({ called: 'after', shots: ['start', 'update'] });
+    await assert.rejects(attach(deps, { verb: 'attach', run: after.run, pr: 9, media: { kind: 'screenshots', labels: ['start', 'update'], newScreens: ['update'] }, before: before.run }), {
+      code: 'USAGE',
+      message: `run ${before.run} has a screenshot labelled update, so its screen is not new`,
+      fix: 'pass update as --screenshot update, which pairs it with that screenshot',
+    });
+    assert.deepEqual(gh.edits, []);
+  });
+
   it('pairs each screenshot the before run lacks with the failure screenshot of the test that takes it, when each state has a test of its own', async () => {
     const gh = fakeGh();
     const { deps, sealed } = checkout(gh);
@@ -576,7 +613,7 @@ describe('attach', () => {
     await assert.rejects(attach(deps, { verb: 'attach', run: after.run, pr: 9, media: still, before: passedWithoutIt.run }), {
       code: 'USAGE',
       message: `run ${passedWithoutIt.run} has no screenshot labelled profile, and no failure screenshot of the test "a" in a.e2e.ts to show in its place`,
-      fix: "call host.screenshot('profile') in the spec and run it on the build without the change, or attach without --before",
+      fix: "call host.screenshot('profile') in the spec and run it on the build without the change, pass it as --new-screen profile when the base branch does not have its screen, or attach without --before",
     });
     const perState = sealed({ called: 'after', states: ['start', 'profile'] });
     const onlyAnotherFailed = sealed({ called: 'before', failed: true, states: ['start'], shots: [] });

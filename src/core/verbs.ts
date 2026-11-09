@@ -641,7 +641,7 @@ async function withCutVideos(deps: Deps, bundle: EvidenceBundle, after: Evidence
   };
   const files = await Promise.all(bundle.files.map((file) => cut(file, after)));
   if (bundle.before === null || before === null) return { ...bundle, files };
-  return { ...bundle, files, before: { ...bundle.before, files: await Promise.all(bundle.before.files.map((file) => cut(file, before))) } };
+  return { ...bundle, files, before: { ...bundle.before, files: await Promise.all(bundle.before.files.map((file) => (file === null ? null : cut(file, before)))) } };
 }
 
 function cutLine(run: RunId, result: VideoCut, spans: readonly EvidenceSpan[] | null): string {

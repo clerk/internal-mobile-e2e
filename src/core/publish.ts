@@ -47,13 +47,20 @@ const table = (header: readonly string[], rows: readonly (readonly string[])[]):
 // `gh pr edit --attach` rewrites only a markdown reference to a file, so the files go up as a list first, and the tables are written from the addresses GitHub gave them.
 export const mediaList = (names: readonly string[], onDisk: readonly string[]): readonly string[] => names.map((name, at) => `![${isVideo(name) ? name : stem(name)}](./${onDisk[at]})`);
 
-export function mediaTables(files: readonly string[], hasBefore: boolean, uploaded: readonly string[]): readonly string[] {
+export const NEW_SCREEN = 'New screen';
+
+export const beforeUploads = (files: readonly string[], hasBefore: readonly boolean[]): readonly (number | null)[] =>
+  hasBefore.map((has, at) => (has ? files.length + hasBefore.slice(0, at).filter(Boolean).length : null));
+
+export function mediaTables(files: readonly string[], hasBefore: readonly boolean[] | null, uploaded: readonly string[]): readonly string[] {
+  const befores = hasBefore === null ? null : beforeUploads(files, hasBefore);
   const shown = files.map((name, at) => {
     const label = stem(name);
     const cell = (url: string, alt: string): string => (isVideo(name) ? url : `<img src="${url}" width="${IMAGE_WIDTH}" alt="${alt}">`);
-    return { label, after: cell(uploaded[at]!, hasBefore ? `After: ${label}` : label), before: hasBefore ? cell(uploaded[files.length + at]!, `Before: ${label}`) : '' };
+    const before = befores?.[at];
+    return { label, after: cell(uploaded[at]!, befores === null ? label : `After: ${label}`), before: before === undefined ? '' : before === null ? NEW_SCREEN : cell(uploaded[before]!, `Before: ${label}`) };
   });
-  if (hasBefore) return [table(['Before', 'After'], shown.map((item) => [item.before, item.after]))];
+  if (befores !== null) return [table(['Before', 'After'], shown.map((item) => [item.before, item.after]))];
   const rows = Array.from({ length: Math.ceil(shown.length / ACROSS) }, (_, row) => shown.slice(row * ACROSS, (row + 1) * ACROSS));
   return rows.map((row) => table(row.map((item) => `\`${item.label}\``), [row.map((item) => item.after)]));
 }
@@ -147,6 +154,11 @@ export function chooseEvidence(pr: number, evidence: Publishable, before: Showab
   const files = [...shots.map((shot) => shot.path), ...video].map((path) => ({ name: basename(path), path }));
   const summary = summarize(evidence);
   if (before === null) return { pr, summary, files, before: null };
+  const newScreens = media.kind === 'screenshots' ? (media.newScreens ?? []) : [];
+  const existing = newScreens.find((label) => before.screenshots.some((s) => s.label === label));
+  if (existing !== undefined) {
+    missing(`run ${before.run} has a screenshot labelled ${existing}, so its screen is not new`, `pass ${existing} as --screenshot ${existing}, which pairs it with that screenshot`);
+  }
 
   const failureShotOf = (label: string, test: { readonly spec: string; readonly title: string }): EvidencePath | null | undefined => {
     const same = before.results.find((r) => r.spec.path === test.spec && r.title === test.title);
@@ -163,18 +175,18 @@ export function chooseEvidence(pr: number, evidence: Publishable, before: Showab
   const was = [
     ...shots.map(
       ({ label, test }) =>
-        before.screenshots.find((s) => s.label === label)?.path ??
+        newScreens.includes(label) ? null : (before.screenshots.find((s) => s.label === label)?.path ??
         (test === undefined ? undefined : failureShotOf(label, test)) ??
         (test === undefined
           ? missing(`run ${before.run} has no screenshot labelled ${label}, and run ${evidence.run} does not record which test took ${label}`, '{cli} run the spec again and attach that run, or attach without --before')
           : missing(
               `run ${before.run} has no screenshot labelled ${label}, and no failure screenshot of the test "${test.title}" in ${basename(test.spec)} to show in its place`,
-              `call host.screenshot('${label}') in the spec and run it on the build without the change, or attach without --before`,
-            )),
+              `call host.screenshot('${label}') in the spec and run it on the build without the change, pass it as --new-screen ${label} when the base branch does not have its screen, or attach without --before`,
+            ))),
     ),
     ...video.map(() => before.videos[0] ?? missing(noVideo(before.run), '{cli} run it again without --no-video, or attach without --video or without --before')),
   ];
-  return { pr, summary, files, before: { summary: summarize(before), files: was.map((path, at) => ({ name: `before-${files[at]!.name}`, path })) } };
+  return { pr, summary, files, before: { summary: summarize(before), files: was.map((path, at) => (path === null ? null : { name: `before-${files[at]!.name}`, path })) } };
 }
 
 const UPLOADED = /https:\/\/github\.com\/user-attachments\/assets\/[0-9a-f-]{36}/g;
@@ -221,7 +233,8 @@ export async function postToPullRequest(bundle: EvidenceBundle, host: HostAdapte
   const prefix = `evidence-${randomBytes(8).toString('hex')}`;
   const onDisk = files.map((file, at) => `${prefix}-${at + 1}${extname(file.name)}`);
   const listed = evidenceBlock(summary, before, mediaList(files.map((file) => file.name), onDisk));
-  const laidOutWith = (uploaded: readonly string[]): string => evidenceBlock(summary, before, mediaTables(bundle.files.map((file) => file.name), before !== null, uploaded));
+  const hasBefore = bundle.before === null ? null : bundle.before.files.map((file) => file !== null);
+  const laidOutWith = (uploaded: readonly string[]): string => evidenceBlock(summary, before, mediaTables(bundle.files.map((file) => file.name), hasBefore, uploaded));
 
   let current = await readDescription(runner, host.githubRepo, pr);
   const there = blockIn(current.body, platform);

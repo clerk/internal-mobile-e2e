@@ -127,6 +127,16 @@ describe('the hand-off manifest', () => {
     assert.deepEqual(parseHandoffManifest(JSON.stringify(withBefore)), withBefore);
   });
 
+  it('accepts null as the before of a screenshot of a new screen, and refuses it for a video or for every file', () => {
+    const newScreen = { ...withBefore, before: { ...goodBefore, files: [goodBefore.files[0]!, null] } };
+    assert.deepEqual(parseHandoffManifest(JSON.stringify(newScreen)), newScreen);
+    const refused: readonly [string, readonly unknown[], RegExp][] = [
+      ['null for a video', [null, goodBefore.files[1]], /before must have one file for each file, of the same kind, or null for a screenshot of a new screen/],
+      ['null for every file', [null, null], /the files of before must be a list of 1 to 50/],
+    ];
+    for (const [what, files, why] of refused) assert.throws(() => parseHandoffManifest(JSON.stringify({ ...withBefore, before: { ...goodBefore, files } })), (error: unknown) => error instanceof HandoffRefused && why.test(error.message), what);
+  });
+
   it('refuses a before run that is malformed, is the run itself, or does not pair with the files of the run', () => {
     const before = (change: Record<string, unknown>) => parse({ before: { ...goodBefore, ...change } });
     const refused: readonly [string, () => unknown, RegExp][] = [
