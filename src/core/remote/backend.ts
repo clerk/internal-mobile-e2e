@@ -339,8 +339,8 @@ export function remoteBackend(settings: RemoteSettings, deps: RemoteDeps = { env
       if (!place.ok) throw wouldNot(`its description ${place.why}, so the evidence has no one place to go`, `${place.fix}, then rerun {cli} attach`);
       let manifest: HandoffManifest;
       try {
-        const described = (files: readonly EvidenceFile[]) => files.map((file) => describeFile(file.name, file.path));
-        const was = bundle.before === null ? null : { run: bundle.before.summary.run, commit: bundle.before.summary.commit, passed: bundle.before.summary.passed, flaky: bundle.before.summary.flaky, total: bundle.before.summary.total, files: bundle.before.files.map((file) => (file === null ? null : describeFile(file.name, file.path))) };
+        const described = <F extends EvidenceFile | null>(files: readonly F[]) => files.map((file) => (file === null ? null : describeFile(file.name, file.path)));
+        const was = bundle.before === null ? null : { run: bundle.before.summary.run, commit: bundle.before.summary.commit, passed: bundle.before.summary.passed, flaky: bundle.before.summary.flaky, total: bundle.before.summary.total, files: described(bundle.before.files) };
         manifest = parseHandoffManifest(JSON.stringify({ v: HANDOFF_VERSION, pr: bundle.pr, ...bundle.summary, files: described(bundle.files), before: was }));
       } catch (error) {
         if (!(error instanceof HandoffRefused)) throw error;

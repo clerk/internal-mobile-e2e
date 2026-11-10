@@ -285,6 +285,19 @@ describe('the receiver in the session job', () => {
     assert.deepEqual(JSON.parse(readFileSync(join(work, 'evidence', 'manifest.json'), 'utf8')), withBefore);
   });
 
+  it('takes a new screen with no before file, and expects no chunk for it', () => {
+    const work = mkdtempSync(join(tmpdir(), 'verify-handoff-'));
+    const receiver = evidenceReceiver(work);
+    const newScreen = { ...withBefore, before: { ...goodBefore, files: [goodBefore.files[0]!, null] } };
+    receiver.begin(JSON.stringify(newScreen));
+    receiver.chunk(chunk('video.mp4', 0, VIDEO));
+    receiver.chunk(chunk('profile.png', 0, SHOT));
+    receiver.chunk(chunk('before-video.mp4', 0, WAS_VIDEO));
+    assert.deepEqual(receiver.commit(), { ok: true, run: good.run, files: 3, bytes: VIDEO.length + SHOT.length + WAS_VIDEO.length });
+    assert.deepEqual(readdirSync(join(work, 'evidence')).sort(), ['before-video.mp4', 'manifest.json', 'profile.png', 'video.mp4']);
+    assert.deepEqual(JSON.parse(readFileSync(join(work, 'evidence', 'manifest.json'), 'utf8')), newScreen);
+  });
+
   it('refuses a chunk for a file the manifest does not name, so no request chooses a path', () => {
     const { work, receiver } = received();
     for (const name of ['../agent.log', '/etc/passwd', 'other.png', 'manifest.json']) assert.equal(status(() => receiver.chunk(chunk(name, 0, SHOT))), 400, name);
@@ -346,13 +359,14 @@ const NO_FFMPEG = { code: 127, stdout: '', stderr: 'spawn ffmpeg ENOENT' };
 
 const LEASE: RemoteLease = { backend: 'remote', provider: 'github-actions', platform: 'ios', session: 'ios0000aa', providerRef: '37731397352', baseUrl: 'https://session.trycloudflare.com', tokenFile: '', deviceId: 'UDID', deviceName: 'iPhone Air', runner: 'xcode-27', expiresAt: '2026-10-08T06:00:00Z', builtSha: COMMIT, builtPatch: null, acquiredAt: '2026-10-08T05:00:00.000Z', installedBuild: null };
 
-function remoteRun(options: { readonly backend?: EvidenceRecord['backend']; readonly lease?: Lease | null; readonly startedAt?: string; readonly handOff?: DeviceBackend['handOffEvidence'] | null; readonly gh?: (args: readonly string[]) => { readonly code: number; readonly stdout: string; readonly stderr: string } } = {}) {
+function remoteRun(options: { readonly shots?: readonly string[]; readonly backend?: EvidenceRecord['backend']; readonly lease?: Lease | null; readonly startedAt?: string; readonly handOff?: DeviceBackend['handOffEvidence'] | null; readonly gh?: (args: readonly string[]) => { readonly code: number; readonly stdout: string; readonly stderr: string } } = {}) {
   const packageDir = mkdtempSync(join(tmpdir(), 'verify-handoff-verb-'));
   const workspace = openWorkspace({ packageDir, worktree: packageDir, home: join(packageDir, 'home') });
   const { run, dir } = workspace.newRun();
   mkdirSync(join(dir, 'screenshots'));
   writeFileSync(join(dir, 'video.mp4'), VIDEO);
-  writeFileSync(join(dir, 'screenshots', 'profile.png'), SHOT);
+  const shots = options.shots ?? ['profile'];
+  for (const label of shots) writeFileSync(join(dir, 'screenshots', `${label}.png`), SHOT);
   const backend = options.backend ?? 'remote';
   sealEvidence(
     dir,
@@ -371,7 +385,7 @@ function remoteRun(options: { readonly backend?: EvidenceRecord['backend']; read
       results: [{ spec: { kind: 'explored', path: 'specs/explored/a.e2e.ts', feature: null }, title: 'a', platform: 'ios', status: 'passed', seconds: 1, attempts: 1, error: null, skipReason: null, skippedBy: null, tags: [], failurePage: null, failureScreen: null, failureScreenshot: null }],
       videos: [join(dir, 'video.mp4') as EvidencePath],
       evidenceSpans: [{ label: 'the change', from: 1, to: 3, passed: true }],
-      screenshots: [{ label: 'profile', path: join(dir, 'screenshots', 'profile.png') as EvidencePath }],
+      screenshots: shots.map((label) => ({ label, path: join(dir, 'screenshots', `${label}.png`) as EvidencePath })),
       appLog: null,
       e2eReport: join(dir, 'e2e', 'report.json') as EvidencePath,
       identities: [],
@@ -473,8 +487,7 @@ describe('attach on a machine whose gh cannot attach', () => {
     assert.deepEqual(bundles.map((bundle) => bundle.files.map((file) => file.name)), [['video.mp4'], ['profile.png']]);
   });
 
-  it('hands off the files of a before run from its directory in this checkout, whichever session made that run', async () => {
-    const { deps, run, dir, bundles } = remoteRun();
+  const beforeRunOf = (deps: Deps, dir: string): { readonly run: RunId; readonly dir: string } => {
     const before = deps.workspace.newRun();
     mkdirSync(join(before.dir, 'screenshots'));
     writeFileSync(join(before.dir, 'video.mp4'), WAS_VIDEO);
@@ -492,6 +505,12 @@ describe('attach on a machine whose gh cannot attach', () => {
         screenshots: [{ label: 'profile', path: join(before.dir, 'screenshots', 'profile.png') }],
       }),
     );
+    return before;
+  };
+
+  it('hands off the files of a before run from its directory in this checkout, whichever session made that run', async () => {
+    const { deps, run, dir, bundles } = remoteRun();
+    const before = beforeRunOf(deps, dir);
     const result = await attach(deps, { verb: 'attach', run, pr: 669, media: STILL, before: before.run });
     assert.deepEqual(bundles[0]!.before, {
       summary: { run: before.run, platform: 'ios', device: 'iPhone Air on xcode-27', commit: BEFORE_COMMIT, passed: 0, flaky: 0, total: 1 },
@@ -500,6 +519,14 @@ describe('attach on a machine whose gh cannot attach', () => {
       ],
     });
     assert.deepEqual(result.via === 'runner' && result.handedOff, [join(dir, 'screenshots', 'profile.png'), join(before.dir, 'screenshots', 'profile.png')]);
+  });
+
+  it('hands off a new screen with no before file, beside the before of a screen that exists', async () => {
+    const { deps, run, dir, bundles } = remoteRun({ shots: ['profile', 'update'] });
+    const before = beforeRunOf(deps, dir);
+    const result = await attach(deps, { verb: 'attach', run, pr: 669, media: { kind: 'screenshots', labels: ['profile', 'update'], newScreens: ['update'] }, before: before.run });
+    assert.deepEqual(bundles[0]!.before?.files, [{ name: 'before-profile.png', path: join(before.dir, 'screenshots', 'profile.png') }, null]);
+    assert.deepEqual(result.via === 'runner' && result.handedOff, [join(dir, 'screenshots', 'profile.png'), join(dir, 'screenshots', 'update.png'), join(before.dir, 'screenshots', 'profile.png')]);
   });
 
   it('hands nothing off when the directory of the before run is not in this checkout, and says what to do', async () => {
@@ -571,6 +598,7 @@ describe('the remote backend before it sends evidence', () => {
     readonly health?: unknown;
     readonly files?: EvidenceBundle['files'];
     readonly before?: string;
+    readonly newScreen?: boolean;
     readonly compared?: { readonly status: number; readonly json: unknown };
     readonly baseCompared?: { readonly status: number; readonly json: unknown };
   }
@@ -580,11 +608,14 @@ describe('the remote backend before it sends evidence', () => {
     writeFileSync(join(dir, 'token'), 'b'.repeat(64));
     writeFileSync(join(dir, 'video.mp4'), VIDEO);
     writeFileSync(join(dir, 'before.mp4'), WAS_VIDEO);
+    writeFileSync(join(dir, 'profile.png'), SHOT);
+    const video = { name: 'video.mp4', path: join(dir, 'video.mp4') as EvidencePath };
+    const wasVideo = { name: 'before-video.mp4', path: join(dir, 'before.mp4') as EvidencePath };
     const bundle: EvidenceBundle = {
       pr: 669,
       summary: { run: good.run as RunId, platform: 'ios', device: good.device, commit: COMMIT, passed: 3, flaky: 0, total: 3 },
-      files: options.files ?? [{ name: 'video.mp4', path: join(dir, 'video.mp4') as EvidencePath }],
-      before: options.before === undefined ? null : { summary: { run: goodBefore.run as RunId, platform: 'ios', device: good.device, commit: options.before, passed: 0, flaky: 0, total: 3 }, files: [{ name: 'before-video.mp4', path: join(dir, 'before.mp4') as EvidencePath }] },
+      files: options.files ?? (options.newScreen === true ? [video, { name: 'profile.png', path: join(dir, 'profile.png') as EvidencePath }] : [video]),
+      before: options.before === undefined ? null : { summary: { run: goodBefore.run as RunId, platform: 'ios', device: good.device, commit: options.before, passed: 0, flaky: 0, total: 3 }, files: options.newScreen === true ? [wasVideo, null] : [wasVideo] },
     };
     const commits = options.commits ?? [STARTED_ON, COMMIT];
     const asked: string[] = [];
@@ -648,6 +679,13 @@ describe('the remote backend before it sends evidence', () => {
         before: { run: goodBefore.run, commit: BEFORE_COMMIT, passed: 0, flaky: 0, total: 3, files: [goodBefore.files[0]] },
       },
     ]);
+  });
+
+  it('sends null in the manifest as the before of a new screen, and no chunk for it', async () => {
+    const { error, sent, manifests } = await handOff({ before: BEFORE_COMMIT, newScreen: true });
+    assert.equal(error, null);
+    assert.deepEqual(sent, ['/__sim/evidence/begin', '/__sim/evidence/chunk', '/__sim/evidence/chunk', '/__sim/evidence/chunk', '/__sim/evidence/commit']);
+    assert.deepEqual(manifests, [{ ...good, before: { run: goodBefore.run, commit: BEFORE_COMMIT, passed: 0, flaky: 0, total: 3, files: [goodBefore.files[0], null] } }]);
   });
 
   it('sends nothing when the commit of the before run is not the commit of the run or one before it in its history, as the workflow would refuse it', async () => {

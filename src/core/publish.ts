@@ -47,9 +47,9 @@ const table = (header: readonly string[], rows: readonly (readonly string[])[]):
 // `gh pr edit --attach` rewrites only a markdown reference to a file, so the files go up as a list first, and the tables are written from the addresses GitHub gave them.
 export const mediaList = (names: readonly string[], onDisk: readonly string[]): readonly string[] => names.map((name, at) => `![${isVideo(name) ? name : stem(name)}](./${onDisk[at]})`);
 
-export const NEW_SCREEN = 'New screen';
+const NEW_SCREEN = 'New screen';
 
-export const beforeUploads = (files: readonly string[], hasBefore: readonly boolean[]): readonly (number | null)[] =>
+const beforeUploads = (files: readonly string[], hasBefore: readonly boolean[]): readonly (number | null)[] =>
   hasBefore.map((has, at) => (has ? files.length + hasBefore.slice(0, at).filter(Boolean).length : null));
 
 export function mediaTables(files: readonly string[], hasBefore: readonly boolean[] | null, uploaded: readonly string[]): readonly string[] {
