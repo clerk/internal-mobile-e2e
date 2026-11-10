@@ -64,6 +64,13 @@ describe('parseArgv', () => {
       media: { kind: 'video' },
       before: 'r20261002-140000-0a1b',
     });
+    assert.deepEqual(parseArgv(['attach', 'r20261002-141210-7c1e', '--pr', '7', '--new-screen', 'update', '--screenshot', 'profile', '--before', 'r20261002-140000-0a1b']).command, {
+      verb: 'attach',
+      run: 'r20261002-141210-7c1e',
+      pr: 7,
+      media: { kind: 'screenshots', labels: ['update', 'profile'], newScreens: ['update'] },
+      before: 'r20261002-140000-0a1b',
+    });
     assert.deepEqual(parseArgv(['down', '--stale', '--dry-run']).command, { verb: 'down', stale: true, dryRun: true });
   });
 
@@ -83,6 +90,21 @@ describe('parseArgv', () => {
       'post one kind: --video for a change to behavior or a flow, --screenshot <label> for a still change',
     );
     assert.throws(() => parseArgv(['attach', 'r20261002-141210-7c1e', '--pr', '412', '--video', '--screenshot', 'a', '--both']), { code: 'USAGE' });
+  });
+
+  it('takes --new-screen only beside --before and a --screenshot of a screen that exists, and each label once', () => {
+    const run = ['attach', 'r20261002-141210-7c1e', '--pr', '412'];
+    const before = ['--before', 'r20261002-140000-0a1b'];
+    assert.equal(
+      usageError([...run, '--screenshot', 'profile', '--new-screen', 'update']).message,
+      '--new-screen <label> leaves the before of a new screen empty beside the before and after of the screens that exist, so it needs --before <run-id>; with no screen that exists, pass each label as --screenshot <label> and no --before',
+    );
+    assert.equal(usageError([...run, '--new-screen', 'update', ...before]).message, 'every label is a --new-screen, so there is no before to show: pass each as --screenshot <label> and drop --before');
+    assert.equal(
+      usageError([...run, '--screenshot', 'update', '--new-screen', 'update', ...before]).message,
+      'update is given twice: pass each label once, as --screenshot <label>, or as --new-screen <label> for a screen the base branch does not have',
+    );
+    assert.equal(usageError([...run, '--video', '--new-screen', 'update', ...before]).message, 'post one kind: --video for a change to behavior or a flow, --screenshot <label> for a still change');
   });
 
   it('reads --json on every verb', () => {

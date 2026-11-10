@@ -33,7 +33,7 @@ const USAGE_FIX = [
   '{cli} up [--platform p] [--backend auto|local|remote] [--runner <label>] [--wait <seconds>]',
   '{cli} run <feature|feature/spec|path.e2e.ts>... | --all [--platform p] [--backend auto|local|remote] [--runner <label>] [--grep re] [--retries <n>] [--max-failures <n>] [--github-report] [--no-video] [--wait <seconds>]',
   '{cli} screen [--platform p] [--png]',
-  '{cli} attach <run-id> --pr <n> --screenshot <label>... | --video [--before <run-id>]',
+  '{cli} attach <run-id> --pr <n> --screenshot <label>... | --video [--before <run-id> [--new-screen <label>...]]',
   '{cli} down [--platform p] [--stale] [--dry-run]',
   '{cli} settings [<leaf prefix>...]',
   'every verb takes --json',
@@ -55,7 +55,7 @@ const FLAGS: Readonly<Record<Verb, FlagSpec>> = {
   up: { platform: 'value', backend: 'value', runner: 'value', wait: 'value' },
   run: { platform: 'value', backend: 'value', runner: 'value', all: 'bool', grep: 'value', retries: 'value', 'max-failures': 'value', 'github-report': 'bool', 'no-video': 'bool', wait: 'value' },
   screen: { platform: 'value', png: 'bool' },
-  attach: { pr: 'value', screenshot: 'list', video: 'bool', before: 'value' },
+  attach: { pr: 'value', screenshot: 'list', 'new-screen': 'list', video: 'bool', before: 'value' },
   down: { platform: 'value', stale: 'bool', 'dry-run': 'bool' },
   settings: {},
 };
@@ -95,6 +95,7 @@ export function parseArgv(argv: readonly string[]): Invocation {
   const spec = FLAGS[verb];
   const values = new Map<string, string>();
   const lists = new Map<string, string[]>();
+  const listed: { readonly name: string; readonly value: string }[] = [];
   const bools = new Set<string>();
   const positionals: string[] = [];
   let json = false;
@@ -118,8 +119,10 @@ export function parseArgv(argv: readonly string[]): Invocation {
     }
     const value = inline ?? rest[(i += 1)];
     if (value === undefined || value.startsWith('--')) throw usage(`--${name} needs a value`);
-    if (kind === 'list') lists.set(name, [...(lists.get(name) ?? []), value]);
-    else {
+    if (kind === 'list') {
+      lists.set(name, [...(lists.get(name) ?? []), value]);
+      listed.push({ name, value });
+    } else {
       if (values.has(name)) throw usage(`--${name} given twice`);
       values.set(name, value);
     }
@@ -172,12 +175,17 @@ export function parseArgv(argv: readonly string[]): Invocation {
       if (positionals.length !== 1) throw usage('{cli} attach takes exactly one run id');
       const run = parseRunId(positionals[0]!);
       const pr = positiveInt('pr', values.get('pr'), undefined);
-      const screenshots = lists.get('screenshot') ?? [];
+      const screenshots = listed.filter((flag) => flag.name === 'screenshot' || flag.name === 'new-screen').map((flag) => flag.value);
+      const newScreens = lists.get('new-screen') ?? [];
       const video = bools.has('video');
+      const before = values.get('before');
       if (screenshots.length === 0 && !video) throw nothingToShow();
       if (screenshots.length > 0 && video) throw usage('post one kind: --video for a change to behavior or a flow, --screenshot <label> for a still change');
-      const media: MediaChoice = video ? { kind: 'video' } : { kind: 'screenshots', labels: screenshots };
-      const before = values.get('before');
+      const twice = screenshots.find((label, at) => screenshots.indexOf(label) !== at);
+      if (twice !== undefined) throw usage(`${twice} is given twice: pass each label once, as --screenshot <label>, or as --new-screen <label> for a screen the base branch does not have`);
+      if (newScreens.length > 0 && before === undefined) throw usage('--new-screen <label> leaves the before of a new screen empty beside the before and after of the screens that exist, so it needs --before <run-id>; with no screen that exists, pass each label as --screenshot <label> and no --before');
+      if (newScreens.length > 0 && newScreens.length === screenshots.length) throw usage('every label is a --new-screen, so there is no before to show: pass each as --screenshot <label> and drop --before');
+      const media: MediaChoice = video ? { kind: 'video' } : { kind: 'screenshots', labels: screenshots, ...(newScreens.length === 0 ? {} : { newScreens }) };
       command = { verb, run, pr, media, before: before === undefined ? null : parseRunId(before) };
       break;
     }
