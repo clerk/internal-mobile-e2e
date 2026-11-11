@@ -429,6 +429,7 @@ describe('one throwaway application', () => {
     assert.deepEqual(up, [{ id: application.id, name: application.name, created: true, settings: 'standard' }]);
     assert.deepEqual(platformCalls(w), ['GET /me', 'GET /applications', 'POST /applications', 'PATCH /applications/{app}/instances/{ins}/config']);
     assert.deepEqual(patches(w)[0]!.body, standardFile().config);
+    assert.deepEqual(w.clerk.platformRequests().find((request) => request.method === 'POST')!.body, { name: application.name, from_source: 'native_e2e' }, 'tagged so analytics leaves it out');
     assert.equal(deadlineOf(application.name)?.getTime(), T0 + 6 * HOUR);
     assert.ok(w.lines.includes(`instance creating ${application.name} in ${WORKSPACE}`));
     assert.ok(w.lines.includes(`instance ${application.id}  up in 0.0s on standard, ${LEAVES} settings match ${STANDARD_FILE}`), w.lines.join('\n'));

@@ -394,7 +394,7 @@ export function createPlatform(deps: PlatformDeps): Platform {
       async create(name) {
         throwawayApplication('', name);
         await guard();
-        const answer = await send(key, 'POST', '/applications', { name });
+        const answer = await send(key, 'POST', '/applications', { name, from_source: 'native_e2e' });
         const body = answer.json as { application_id?: unknown; instances?: readonly { environment_type?: unknown; instance_id?: unknown; publishable_key?: unknown; secret_key?: unknown }[] } | null;
         if (answer.status !== 200 && answer.status !== 201) throw refused(answer, `creating ${name}`);
         const development = body?.instances?.find((instance) => instance.environment_type === 'development');
