@@ -515,6 +515,24 @@ describe('attach', () => {
     assert.deepEqual(partsOf(undefined), []);
   });
 
+  it('escapes Markdown in a label, without splitting an escape at the length limit', () => {
+    assert.equal(evidencePart('![x](https://example.com/a.png) *bold* _it_ [link] #1 ~s~'), '\\!\\[x\\]\\(https://example.com/a.png\\) \\*bold\\* \\_it\\_ \\[link\\] \\#1 \\~s\\~');
+    assert.equal(evidencePart('maya.7c1e+clerk_test@example.com'), 'maya.7c1e+clerk\\_test@example.com');
+    const cut = evidencePart(`${'a'.repeat(199)}*`);
+    assert.equal(cut, 'a'.repeat(199));
+    assert.ok(evidencePart('*'.repeat(150)).length <= 200);
+    assert.ok(!evidencePart('*'.repeat(150)).endsWith('\\\\'));
+  });
+
+  it('counts the stopped parts in the fold, so a before run that stopped late never matches a finished after run', () => {
+    const spans = (stoppedAt: number | null) => Array.from({ length: 21 }, (_, at) => ({ label: `part ${at + 1}`, from: at, passed: at !== stoppedAt }));
+    const before = partsOf(spans(20));
+    const after = partsOf(spans(null));
+    assert.equal(before.at(-1), 'and 2 more, 1 stopped before it finished');
+    assert.equal(after.at(-1), 'and 2 more');
+    assert.deepEqual(partsSection(after, before).map((section) => section.split('\n')[0]), ['The before video shows these parts, in order:', 'The after video shows these parts, in order:']);
+  });
+
   it('says a part stopped before it finished when its test failed inside the block, so it never matches a finished one', () => {
     const before = partsOf([{ label: 'open the switcher', from: 0, passed: true }, { label: 'create an organization', from: 5, passed: false }]);
     assert.deepEqual(before, ['open the switcher', 'create an organization (stopped before it finished)']);

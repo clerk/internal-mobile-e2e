@@ -50,22 +50,41 @@ export const mediaList = (names: readonly string[], onDisk: readonly string[]): 
 
 const NEW_SCREEN = 'New screen';
 
-export const evidencePart = (label: string): string => label.replace(NOT_IN_A_PART, ' ').replace(/\s+/g, ' ').trim().slice(0, HANDOFF_LIMITS.partChars);
+const MARKDOWN = /[\\*_[\]()!~#]/;
+
+// GitHub renders a description as Markdown, so a label's Markdown characters are escaped, and the cut never splits an escape.
+const escapedWithin = (text: string, room: number): string => {
+  let out = '';
+  for (const char of text) {
+    const next = MARKDOWN.test(char) ? `\\${char}` : char;
+    if (out.length + next.length > room) break;
+    out += next;
+  }
+  return out.trimEnd();
+};
+
+const plainLabel = (label: string): string => label.replace(NOT_IN_A_PART, ' ').replace(/\s+/g, ' ').trim();
+
+export const evidencePart = (label: string): string => escapedWithin(plainLabel(label), HANDOFF_LIMITS.partChars);
 
 const STOPPED = ' (stopped before it finished)';
 
 // A block whose test failed inside it shows only the start of what its label says, so its part says so too.
 const partOf = (span: { readonly label: string; readonly passed: boolean }): string => {
-  const label = evidencePart(span.label);
-  if (span.passed || label === '') return label;
-  return `${label.slice(0, HANDOFF_LIMITS.partChars - STOPPED.length).trimEnd()}${STOPPED}`;
+  const label = plainLabel(span.label);
+  if (label === '') return '';
+  return span.passed ? escapedWithin(label, HANDOFF_LIMITS.partChars) : `${escapedWithin(label, HANDOFF_LIMITS.partChars - STOPPED.length)}${STOPPED}`;
 };
 
 // Marks are written when a block ends, so the spans are put in the order the blocks started.
+// The parts past the limit fold into one line that still counts the stopped ones, so a before run that stopped late never matches a finished after run.
 export function partsOf(spans: readonly { readonly label: string; readonly from: number; readonly passed: boolean }[] | undefined): readonly string[] {
-  const parts = [...(spans ?? [])].sort((a, b) => a.from - b.from).map(partOf).filter((part) => part !== '');
+  const kept = [...(spans ?? [])].sort((a, b) => a.from - b.from).filter((span) => plainLabel(span.label) !== '');
   const most = HANDOFF_LIMITS.parts;
-  return parts.length <= most ? parts : [...parts.slice(0, most - 1), `and ${parts.length - most + 1} more`];
+  if (kept.length <= most) return kept.map(partOf);
+  const folded = kept.slice(most - 1);
+  const stopped = folded.filter((span) => !span.passed).length;
+  return [...kept.slice(0, most - 1).map(partOf), `and ${folded.length} more${stopped === 0 ? '' : `, ${stopped} stopped before it finished`}`];
 }
 
 const listed = (heading: string, parts: readonly string[]): string => [`${heading} these parts, in order:`, ...parts.map((part, at) => `${at + 1}. ${part}`)].join('\n');
