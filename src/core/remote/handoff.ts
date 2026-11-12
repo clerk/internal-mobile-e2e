@@ -27,7 +27,11 @@ export const HANDOFF_LIMITS = {
   pr: 9_999_999,
   tests: 10_000,
   parts: 20,
+  partChars: 200,
 } as const;
+
+// A part's label goes into a pull request description, so it is one line of plain text: no control characters and no markup characters.
+export const NOT_IN_A_PART = /[\u0000-\u001f<>`|]/g;
 
 export interface HandoffFile {
   readonly name: string;
@@ -42,6 +46,7 @@ export interface HandoffBefore {
   readonly flaky: number;
   readonly total: number;
   readonly files: readonly (HandoffFile | null)[];
+  readonly parts: readonly string[];
 }
 
 export interface HandoffManifest {
@@ -70,8 +75,10 @@ const SHAPE = {
 const MANIFEST_KEYS = ['v', 'pr', 'run', 'platform', 'device', 'commit', 'passed', 'flaky', 'total', 'files', 'before', 'parts'];
 // Version 2 came before the parts of the video.
 const KEYS_OF_VERSION_2 = MANIFEST_KEYS.filter((key) => key !== 'parts');
-const PART = /^[^\u0000-\u001f<>`|]{1,200}$/;
-const BEFORE_KEYS = ['run', 'commit', 'passed', 'flaky', 'total', 'files'];
+const isPart = (value: unknown): value is string =>
+  typeof value === 'string' && value.length >= 1 && value.length <= HANDOFF_LIMITS.partChars && value.match(NOT_IN_A_PART) === null;
+const BEFORE_KEYS = ['run', 'commit', 'passed', 'flaky', 'total', 'files', 'parts'];
+const BEFORE_KEYS_OF_VERSION_2 = BEFORE_KEYS.filter((key) => key !== 'parts');
 const FILE_KEYS = ['name', 'bytes', 'sha256'];
 
 export class HandoffRefused extends Error {
@@ -123,8 +130,8 @@ function parseFiles(list: unknown, what: string): HandoffFile[] {
   return files;
 }
 
-function parseBefore(value: unknown, run: unknown, files: readonly HandoffFile[]): HandoffBefore {
-  const raw = record(value, BEFORE_KEYS, 'before');
+function parseBefore(value: unknown, run: unknown, files: readonly HandoffFile[], withParts: boolean): HandoffBefore {
+  const raw = record(value, withParts ? BEFORE_KEYS : BEFORE_KEYS_OF_VERSION_2, 'before');
   const before: HandoffBefore = {
     run: shaped(raw.run, SHAPE.run, 'the run of before'),
     commit: shaped(raw.commit, SHAPE.commit, 'the commit of before'),
@@ -132,6 +139,7 @@ function parseBefore(value: unknown, run: unknown, files: readonly HandoffFile[]
     flaky: whole(raw.flaky, 0, HANDOFF_LIMITS.tests, 'flaky of before'),
     total: whole(raw.total, 1, HANDOFF_LIMITS.tests, 'total of before'),
     files: parseBeforeFiles(raw.files, files),
+    parts: withParts ? parseParts(raw.parts) : [],
   };
   if (before.run === run) refuse('before is the run itself');
   if (before.passed + before.flaky > before.total) refuse('passed and flaky of before must count at most total');
@@ -150,7 +158,7 @@ function parseBeforeFiles(list: unknown, files: readonly HandoffFile[]): (Handof
 
 function parseParts(list: unknown): string[] {
   if (!Array.isArray(list) || list.length > HANDOFF_LIMITS.parts) return refuse(`parts must be a list of at most ${HANDOFF_LIMITS.parts}`);
-  return (list as unknown[]).map((part, i) => (typeof part === 'string' && PART.test(part) ? part : refuse(`part ${i + 1} must be 1 to 200 characters of one line, without <, >, \` or |`)));
+  return (list as unknown[]).map((part, i) => (isPart(part) ? part : refuse(`part ${i + 1} must be 1 to 200 characters of one line, without <, >, \` or |`)));
 }
 
 export function parseHandoffManifest(text: string): HandoffManifest {
@@ -170,7 +178,7 @@ export function parseHandoffManifest(text: string): HandoffManifest {
   const parts = v === HANDOFF_VERSION ? parseParts(raw.parts) : [];
   if (raw.platform !== 'ios' && raw.platform !== 'android') refuse('platform must be ios or android');
   const files = parseFiles(raw.files, 'files');
-  const before = raw.before === null ? null : parseBefore(raw.before, raw.run, files);
+  const before = raw.before === null ? null : parseBefore(raw.before, raw.run, files, v === HANDOFF_VERSION);
   const all = everyFile({ files, before });
   if (all.length > HANDOFF_LIMITS.files) refuse(`at most ${HANDOFF_LIMITS.files} files in all`);
   if (new Set(all.map((file) => file.name.toLowerCase())).size !== all.length) refuse('two files have the same name');

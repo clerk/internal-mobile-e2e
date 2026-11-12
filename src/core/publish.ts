@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { basename, extname, join } from 'node:path';
 import { run as defaultRunner, type Runner } from './exec.ts';
 import type { Publishable, Showable } from './evidence.ts';
+import { HANDOFF_LIMITS, NOT_IN_A_PART } from './remote/handoff.ts';
 import { VerifyFailure, everyFile, type AttachResult, type EvidenceBundle, type EvidenceComment, type EvidencePath, type EvidenceSummary, type HostAdapter, type MediaChoice, type Platform } from './types.ts';
 
 export function summarize(evidence: Showable): EvidenceSummary {
@@ -49,11 +50,32 @@ export const mediaList = (names: readonly string[], onDisk: readonly string[]): 
 
 const NEW_SCREEN = 'New screen';
 
-// A part's label comes from the spec's host.evidence call, so it is cut to one line of plain text before it goes into the description.
-export const evidencePart = (label: string): string => label.replace(/[\u0000-\u001f<>`|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
+export const evidencePart = (label: string): string => label.replace(NOT_IN_A_PART, ' ').replace(/\s+/g, ' ').trim().slice(0, HANDOFF_LIMITS.partChars);
 
-export const partsSection = (parts: readonly string[], hasBefore: boolean): readonly string[] =>
-  parts.length === 0 ? [] : [[`${hasBefore ? 'Each video shows' : 'The video shows'} these parts, in order:`, ...parts.map((part, at) => `${at + 1}. ${part}`)].join('\n')];
+const STOPPED = ' (stopped before it finished)';
+
+// A block whose test failed inside it shows only the start of what its label says, so its part says so too.
+const partOf = (span: { readonly label: string; readonly passed: boolean }): string => {
+  const label = evidencePart(span.label);
+  if (span.passed || label === '') return label;
+  return `${label.slice(0, HANDOFF_LIMITS.partChars - STOPPED.length).trimEnd()}${STOPPED}`;
+};
+
+// Marks are written when a block ends, so the spans are put in the order the blocks started.
+export function partsOf(spans: readonly { readonly label: string; readonly from: number; readonly passed: boolean }[] | undefined): readonly string[] {
+  const parts = [...(spans ?? [])].sort((a, b) => a.from - b.from).map(partOf).filter((part) => part !== '');
+  const most = HANDOFF_LIMITS.parts;
+  return parts.length <= most ? parts : [...parts.slice(0, most - 1), `and ${parts.length - most + 1} more`];
+}
+
+const listed = (heading: string, parts: readonly string[]): string => [`${heading} these parts, in order:`, ...parts.map((part, at) => `${at + 1}. ${part}`)].join('\n');
+
+// The before video is cut to the before run's own parts, which differ when that run failed partway or seeded other users.
+export function partsSection(parts: readonly string[], beforeParts: readonly string[] | null): readonly string[] {
+  if (beforeParts === null) return parts.length === 0 ? [] : [listed('The video shows', parts)];
+  if (parts.length > 0 && parts.length === beforeParts.length && parts.every((part, at) => part === beforeParts[at])) return [listed('Each video shows', parts)];
+  return [...(beforeParts.length === 0 ? [] : [listed('The before video shows', beforeParts)]), ...(parts.length === 0 ? [] : [listed('The after video shows', parts)])];
+}
 
 const beforeUploads = (files: readonly string[], hasBefore: readonly boolean[]): readonly (number | null)[] =>
   hasBefore.map((has, at) => (has ? files.length + hasBefore.slice(0, at).filter(Boolean).length : null));
@@ -159,7 +181,7 @@ export function chooseEvidence(pr: number, evidence: Publishable, before: Showab
   const video = media.kind === 'video' ? [evidence.videos[0] ?? missing(noVideo(evidence.run), '{cli} run a spec that calls host.launch, without --no-video, and attach that run, or attach this one with --screenshot <label>')] : [];
   const files = [...shots.map((shot) => shot.path), ...video].map((path) => ({ name: basename(path), path }));
   const summary = summarize(evidence);
-  const parts = media.kind === 'video' ? (evidence.evidenceSpans ?? []).map((span) => evidencePart(span.label)).filter((part) => part !== '') : [];
+  const parts = media.kind === 'video' ? partsOf(evidence.evidenceSpans) : [];
   if (before === null) return { pr, summary, files, before: null, parts };
   const newScreens = media.kind === 'screenshots' ? (media.newScreens ?? []) : [];
   const existing = newScreens.find((label) => before.screenshots.some((s) => s.label === label));
@@ -193,7 +215,8 @@ export function chooseEvidence(pr: number, evidence: Publishable, before: Showab
     ),
     ...video.map(() => before.videos[0] ?? missing(noVideo(before.run), '{cli} run it again without --no-video, or attach without --video or without --before')),
   ];
-  return { pr, summary, files, before: { summary: summarize(before), files: was.map((path, at) => (path === null ? null : { name: `before-${files[at]!.name}`, path })) }, parts };
+  const beforeParts = media.kind === 'video' ? partsOf(before.evidenceSpans) : [];
+  return { pr, summary, files, before: { summary: summarize(before), files: was.map((path, at) => (path === null ? null : { name: `before-${files[at]!.name}`, path })), parts: beforeParts }, parts };
 }
 
 const UPLOADED = /https:\/\/github\.com\/user-attachments\/assets\/[0-9a-f-]{36}/g;
@@ -242,7 +265,7 @@ export async function postToPullRequest(bundle: EvidenceBundle, host: HostAdapte
   const listed = evidenceBlock(summary, before, mediaList(files.map((file) => file.name), onDisk));
   const hasBefore = bundle.before === null ? null : bundle.before.files.map((file) => file !== null);
   const laidOutWith = (uploaded: readonly string[]): string =>
-    evidenceBlock(summary, before, [...mediaTables(bundle.files.map((file) => file.name), hasBefore, uploaded), ...partsSection(bundle.parts ?? [], hasBefore !== null)]);
+    evidenceBlock(summary, before, [...mediaTables(bundle.files.map((file) => file.name), hasBefore, uploaded), ...partsSection(bundle.parts, bundle.before === null ? null : bundle.before.parts)]);
 
   let current = await readDescription(runner, host.githubRepo, pr);
   const there = blockIn(current.body, platform);

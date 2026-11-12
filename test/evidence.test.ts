@@ -8,7 +8,7 @@ import { describe, it } from 'node:test';
 import { testEmail } from '../specs/support/clerk.ts';
 import { assertPublishable, loggedUserIds, sealEvidence } from '../src/core/evidence.ts';
 import type { Runner } from '../src/core/exec.ts';
-import { evidenceBlock, evidenceMarkers, evidencePart, partsSection, summarize, withEvidenceBlock } from '../src/core/publish.ts';
+import { evidenceBlock, evidenceMarkers, evidencePart, partsOf, partsSection, summarize, withEvidenceBlock } from '../src/core/publish.ts';
 import { Secret } from '../specs/support/secret.ts';
 import { attach } from '../src/core/verbs.ts';
 import { newRunId } from '../specs/support/inputs.ts';
@@ -497,8 +497,29 @@ describe('attach', () => {
   it('lists the parts of a video as one line each, with markup and line breaks taken out', () => {
     assert.equal(evidencePart('  a <b>bold</b> `step`\nwith | pipes  '), 'a b bold /b step with pipes');
     assert.equal(evidencePart('x'.repeat(250)).length, 200);
-    assert.deepEqual(partsSection([], true), []);
-    assert.deepEqual(partsSection(['one', 'two'], false), ['The video shows these parts, in order:\n1. one\n2. two']);
+    assert.deepEqual(partsSection([], []), []);
+    assert.deepEqual(partsSection(['one', 'two'], null), ['The video shows these parts, in order:\n1. one\n2. two']);
+  });
+
+  it('says each video shows the parts only when both runs marked the same ones, and lists each otherwise', () => {
+    assert.deepEqual(partsSection(['one', 'two'], ['one', 'two']), ['Each video shows these parts, in order:\n1. one\n2. two']);
+    assert.deepEqual(partsSection(['one', 'two'], ['one']), ['The before video shows these parts, in order:\n1. one', 'The after video shows these parts, in order:\n1. one\n2. two']);
+    assert.deepEqual(partsSection(['one'], []), ['The after video shows these parts, in order:\n1. one']);
+  });
+
+  it('puts the parts in the order their blocks started, and folds the ones past twenty into the last', () => {
+    assert.deepEqual(partsOf([{ label: 'inner', from: 2, passed: true }, { label: 'outer', from: 1, passed: true }]), ['outer', 'inner']);
+    const many = partsOf(Array.from({ length: 23 }, (_, at) => ({ label: `part ${at + 1}`, from: at, passed: true })));
+    assert.equal(many.length, 20);
+    assert.equal(many.at(-1), 'and 4 more');
+    assert.deepEqual(partsOf(undefined), []);
+  });
+
+  it('says a part stopped before it finished when its test failed inside the block, so it never matches a finished one', () => {
+    const before = partsOf([{ label: 'open the switcher', from: 0, passed: true }, { label: 'create an organization', from: 5, passed: false }]);
+    assert.deepEqual(before, ['open the switcher', 'create an organization (stopped before it finished)']);
+    assert.notDeepEqual(partsSection(['open the switcher', 'create an organization'], before), [`Each video shows these parts, in order:\n1. open the switcher\n2. create an organization`]);
+    assert.equal(partsOf([{ label: 'x'.repeat(250), from: 0, passed: false }])[0]!.length, 200);
   });
 
   it('posts the part of each video that its run marked, cut by ffmpeg, and says how long each was and is', async () => {

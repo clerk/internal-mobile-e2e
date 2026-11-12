@@ -53,6 +53,7 @@ const goodBefore = {
     { name: 'before-video.mp4', bytes: WAS_VIDEO.length, sha256: sha256(WAS_VIDEO) },
     { name: 'before-profile.png', bytes: WAS_SHOT.length, sha256: sha256(WAS_SHOT) },
   ],
+  parts: ['open the switcher'],
 };
 const withBefore: HandoffManifest = { ...good, before: goodBefore };
 
@@ -128,6 +129,13 @@ describe('the hand-off manifest', () => {
     const { parts: _, ...versionTwo } = { ...good, v: 2 };
     assert.deepEqual(parseHandoffManifest(JSON.stringify(versionTwo)), { ...good, parts: [] });
     assert.throws(() => parseHandoffManifest(JSON.stringify({ ...versionTwo, parts: [] })), /the manifest must have exactly the keys/);
+  });
+
+  it('reads the before of a version 2 manifest as having no parts, and refuses parts in it', () => {
+    const { parts: _, ...versionTwo } = { ...withBefore, v: 2 };
+    const { parts: __, ...beforeTwo } = goodBefore;
+    assert.deepEqual(parseHandoffManifest(JSON.stringify({ ...versionTwo, before: beforeTwo })), { ...withBefore, parts: [], before: { ...goodBefore, parts: [] } });
+    assert.throws(() => parseHandoffManifest(JSON.stringify({ ...versionTwo, before: goodBefore })), /before must have exactly the keys/);
   });
 
   it('refuses parts that are not a short list of one-line labels without markup', () => {
@@ -533,6 +541,7 @@ describe('attach on a machine whose gh cannot attach', () => {
       files: [
         { name: 'before-profile.png', path: join(before.dir, 'screenshots', 'profile.png') },
       ],
+      parts: [],
     });
     assert.deepEqual(result.via === 'runner' && result.handedOff, [join(dir, 'screenshots', 'profile.png'), join(before.dir, 'screenshots', 'profile.png')]);
   });
@@ -631,7 +640,8 @@ describe('the remote backend before it sends evidence', () => {
       pr: 669,
       summary: { run: good.run as RunId, platform: 'ios', device: good.device, commit: COMMIT, passed: 3, flaky: 0, total: 3 },
       files: options.files ?? (options.newScreen === true ? [video, { name: 'profile.png', path: join(dir, 'profile.png') as EvidencePath }] : [video]),
-      before: options.before === undefined ? null : { summary: { run: goodBefore.run as RunId, platform: 'ios', device: good.device, commit: options.before, passed: 0, flaky: 0, total: 3 }, files: options.newScreen === true ? [wasVideo, null] : [wasVideo] },
+      before: options.before === undefined ? null : { summary: { run: goodBefore.run as RunId, platform: 'ios', device: good.device, commit: options.before, passed: 0, flaky: 0, total: 3 }, files: options.newScreen === true ? [wasVideo, null] : [wasVideo], parts: [] },
+      parts: [],
     };
     const commits = options.commits ?? [STARTED_ON, COMMIT];
     const asked: string[] = [];
@@ -692,7 +702,7 @@ describe('the remote backend before it sends evidence', () => {
       {
         ...good,
         files: [good.files[0]],
-        before: { run: goodBefore.run, commit: BEFORE_COMMIT, passed: 0, flaky: 0, total: 3, files: [goodBefore.files[0]] },
+        before: { run: goodBefore.run, commit: BEFORE_COMMIT, passed: 0, flaky: 0, total: 3, files: [goodBefore.files[0]], parts: [] },
         parts: [],
       },
     ]);
@@ -702,7 +712,7 @@ describe('the remote backend before it sends evidence', () => {
     const { error, sent, manifests } = await handOff({ before: BEFORE_COMMIT, newScreen: true });
     assert.equal(error, null);
     assert.deepEqual(sent, ['/__sim/evidence/begin', '/__sim/evidence/chunk', '/__sim/evidence/chunk', '/__sim/evidence/chunk', '/__sim/evidence/commit']);
-    assert.deepEqual(manifests, [{ ...good, before: { run: goodBefore.run, commit: BEFORE_COMMIT, passed: 0, flaky: 0, total: 3, files: [goodBefore.files[0], null] }, parts: [] }]);
+    assert.deepEqual(manifests, [{ ...good, before: { run: goodBefore.run, commit: BEFORE_COMMIT, passed: 0, flaky: 0, total: 3, files: [goodBefore.files[0], null], parts: [] }, parts: [] }]);
   });
 
   it('sends nothing when the commit of the before run is not the commit of the run or one before it in its history, as the workflow would refuse it', async () => {
