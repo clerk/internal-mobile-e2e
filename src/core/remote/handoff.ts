@@ -3,7 +3,8 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync
 import { join } from 'node:path';
 import { everyFile, type Platform } from '../types.ts';
 
-export const HANDOFF_VERSION = 2 as const;
+export const HANDOFF_VERSION = 3 as const;
+const VERSIONS_TAKEN = [2, HANDOFF_VERSION];
 
 export const HANDOFF = {
   artifact: 'verify-evidence',
@@ -25,6 +26,7 @@ export const HANDOFF_LIMITS = {
   chunkBodyBytes: 1_500_000,
   pr: 9_999_999,
   tests: 10_000,
+  parts: 20,
 } as const;
 
 export interface HandoffFile {
@@ -54,6 +56,7 @@ export interface HandoffManifest {
   readonly total: number;
   readonly files: readonly HandoffFile[];
   readonly before: HandoffBefore | null;
+  readonly parts: readonly string[];
 }
 
 const SHAPE = {
@@ -64,7 +67,10 @@ const SHAPE = {
   fileName: /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}\.(png|jpg|mp4)$/,
 } as const;
 
-const MANIFEST_KEYS = ['v', 'pr', 'run', 'platform', 'device', 'commit', 'passed', 'flaky', 'total', 'files', 'before'];
+const MANIFEST_KEYS = ['v', 'pr', 'run', 'platform', 'device', 'commit', 'passed', 'flaky', 'total', 'files', 'before', 'parts'];
+// Version 2 came before the parts of the video.
+const KEYS_OF_VERSION_2 = MANIFEST_KEYS.filter((key) => key !== 'parts');
+const PART = /^[^\u0000-\u001f<>`|]{1,200}$/;
 const BEFORE_KEYS = ['run', 'commit', 'passed', 'flaky', 'total', 'files'];
 const FILE_KEYS = ['name', 'bytes', 'sha256'];
 
@@ -142,6 +148,11 @@ function parseBeforeFiles(list: unknown, files: readonly HandoffFile[]): (Handof
   return paired;
 }
 
+function parseParts(list: unknown): string[] {
+  if (!Array.isArray(list) || list.length > HANDOFF_LIMITS.parts) return refuse(`parts must be a list of at most ${HANDOFF_LIMITS.parts}`);
+  return (list as unknown[]).map((part, i) => (typeof part === 'string' && PART.test(part) ? part : refuse(`part ${i + 1} must be 1 to 200 characters of one line, without <, >, \` or |`)));
+}
+
 export function parseHandoffManifest(text: string): HandoffManifest {
   if (Buffer.byteLength(text) > HANDOFF_LIMITS.manifestBytes) refuse(`the manifest is over ${HANDOFF_LIMITS.manifestBytes} bytes`);
   let parsed: unknown;
@@ -151,11 +162,12 @@ export function parseHandoffManifest(text: string): HandoffManifest {
     return refuse('the manifest is not JSON');
   }
   const { v } = anObject(parsed, 'the manifest');
-  if (v !== HANDOFF_VERSION) {
+  if (!VERSIONS_TAKEN.includes(v as number)) {
     const found = typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 999 ? `version ${v}` : 'of no version this session knows';
-    refuse(`the manifest is ${found}, and this session takes only version ${HANDOFF_VERSION}`);
+    refuse(`the manifest is ${found}, and this session takes only versions ${VERSIONS_TAKEN.join(' and ')}`);
   }
-  const raw = record(parsed, MANIFEST_KEYS, 'the manifest');
+  const raw = record(parsed, v === HANDOFF_VERSION ? MANIFEST_KEYS : KEYS_OF_VERSION_2, 'the manifest');
+  const parts = v === HANDOFF_VERSION ? parseParts(raw.parts) : [];
   if (raw.platform !== 'ios' && raw.platform !== 'android') refuse('platform must be ios or android');
   const files = parseFiles(raw.files, 'files');
   const before = raw.before === null ? null : parseBefore(raw.before, raw.run, files);
@@ -175,6 +187,7 @@ export function parseHandoffManifest(text: string): HandoffManifest {
     total: whole(raw.total, 1, HANDOFF_LIMITS.tests, 'total'),
     files,
     before,
+    parts,
   };
   if (manifest.passed + manifest.flaky < 1 || manifest.passed + manifest.flaky > manifest.total) refuse('passed and flaky must count at least one test and at most total');
   return manifest;

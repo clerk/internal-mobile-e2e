@@ -341,7 +341,7 @@ export function remoteBackend(settings: RemoteSettings, deps: RemoteDeps = { env
       try {
         const described = <F extends EvidenceFile | null>(files: readonly F[]) => files.map((file) => (file === null ? null : describeFile(file.name, file.path)));
         const was = bundle.before === null ? null : { run: bundle.before.summary.run, commit: bundle.before.summary.commit, passed: bundle.before.summary.passed, flaky: bundle.before.summary.flaky, total: bundle.before.summary.total, files: described(bundle.before.files) };
-        manifest = parseHandoffManifest(JSON.stringify({ v: HANDOFF_VERSION, pr: bundle.pr, ...bundle.summary, files: described(bundle.files), before: was }));
+        manifest = parseHandoffManifest(JSON.stringify({ v: HANDOFF_VERSION, pr: bundle.pr, ...bundle.summary, files: described(bundle.files), before: was, parts: bundle.parts ?? [] }));
       } catch (error) {
         if (!(error instanceof HandoffRefused)) throw error;
         throw new VerifyFailure('NOT_READY', `the evidence of run ${run} cannot be handed to the runner: ${error.message}`, 'attach fewer or smaller files: fewer --screenshot labels, or no --video');

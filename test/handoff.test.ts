@@ -23,7 +23,7 @@ const VIDEO = Buffer.from('a video that is longer than one chunk of five bytes')
 const SHOT = Buffer.from('png bytes');
 
 const good: HandoffManifest = {
-  v: 2,
+  v: 3,
   pr: 669,
   run: 'r20261008-052713-253e',
   platform: 'ios',
@@ -37,6 +37,7 @@ const good: HandoffManifest = {
     { name: 'profile.png', bytes: SHOT.length, sha256: sha256(SHOT) },
   ],
   before: null,
+  parts: ['create an organization from the switcher'],
 };
 
 const BEFORE_COMMIT = '5e126375065188df5bec4e4e75d61db03834f395';
@@ -117,10 +118,24 @@ describe('the hand-off manifest', () => {
       return 'accepted';
     };
     const { before: _, ...versionOne } = { ...good, v: 1 };
-    assert.equal(refusal(versionOne), 'the manifest is version 1, and this session takes only version 2');
-    assert.equal(refusal({ ...good, v: 3, layout: 'a key of a later version' }), 'the manifest is version 3, and this session takes only version 2');
-    for (const v of ['2', 2.5, -1, 1000, null, 'x'.repeat(4000)]) assert.equal(refusal({ ...good, v }), 'the manifest is of no version this session knows, and this session takes only version 2', JSON.stringify(v).slice(0, 20));
-    assert.equal(refusal({ device: 'x' }), 'the manifest is of no version this session knows, and this session takes only version 2');
+    assert.equal(refusal(versionOne), 'the manifest is version 1, and this session takes only versions 2 and 3');
+    assert.equal(refusal({ ...good, v: 4, layout: 'a key of a later version' }), 'the manifest is version 4, and this session takes only versions 2 and 3');
+    for (const v of ['2', 2.5, -1, 1000, null, 'x'.repeat(4000)]) assert.equal(refusal({ ...good, v }), 'the manifest is of no version this session knows, and this session takes only versions 2 and 3', JSON.stringify(v).slice(0, 20));
+    assert.equal(refusal({ device: 'x' }), 'the manifest is of no version this session knows, and this session takes only versions 2 and 3');
+  });
+
+  it('reads a version 2 manifest, which has no parts, as one with no parts', () => {
+    const { parts: _, ...versionTwo } = { ...good, v: 2 };
+    assert.deepEqual(parseHandoffManifest(JSON.stringify(versionTwo)), { ...good, parts: [] });
+    assert.throws(() => parseHandoffManifest(JSON.stringify({ ...versionTwo, parts: [] })), /the manifest must have exactly the keys/);
+  });
+
+  it('refuses parts that are not a short list of one-line labels without markup', () => {
+    const parse = (parts: unknown): HandoffManifest => parseHandoffManifest(JSON.stringify({ ...good, parts }));
+    assert.deepEqual(parse([]).parts, []);
+    for (const parts of ['a label', [''], ['two\nlines'], ['<b>bold</b>'], ['a `tick`'], ['a | pipe'], ['x'.repeat(201)], Array.from({ length: 21 }, () => 'a part')]) {
+      assert.throws(() => parse(parts), HandoffRefused, JSON.stringify(parts).slice(0, 30));
+    }
   });
 
   it('accepts a before run, which may have passed nothing, with one file of the same kind for each file of the run', () => {
@@ -420,6 +435,7 @@ describe('attach on a machine whose gh cannot attach', () => {
           { name: 'profile.png', path: join(dir, 'screenshots', 'profile.png') },
         ],
         before: null,
+        parts: [],
       },
     ]);
     assert.deepEqual(result, {
@@ -677,6 +693,7 @@ describe('the remote backend before it sends evidence', () => {
         ...good,
         files: [good.files[0]],
         before: { run: goodBefore.run, commit: BEFORE_COMMIT, passed: 0, flaky: 0, total: 3, files: [goodBefore.files[0]] },
+        parts: [],
       },
     ]);
   });
@@ -685,7 +702,7 @@ describe('the remote backend before it sends evidence', () => {
     const { error, sent, manifests } = await handOff({ before: BEFORE_COMMIT, newScreen: true });
     assert.equal(error, null);
     assert.deepEqual(sent, ['/__sim/evidence/begin', '/__sim/evidence/chunk', '/__sim/evidence/chunk', '/__sim/evidence/chunk', '/__sim/evidence/commit']);
-    assert.deepEqual(manifests, [{ ...good, before: { run: goodBefore.run, commit: BEFORE_COMMIT, passed: 0, flaky: 0, total: 3, files: [goodBefore.files[0], null] } }]);
+    assert.deepEqual(manifests, [{ ...good, before: { run: goodBefore.run, commit: BEFORE_COMMIT, passed: 0, flaky: 0, total: 3, files: [goodBefore.files[0], null] }, parts: [] }]);
   });
 
   it('sends nothing when the commit of the before run is not the commit of the run or one before it in its history, as the workflow would refuse it', async () => {

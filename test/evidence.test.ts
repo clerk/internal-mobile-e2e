@@ -8,7 +8,7 @@ import { describe, it } from 'node:test';
 import { testEmail } from '../specs/support/clerk.ts';
 import { assertPublishable, loggedUserIds, sealEvidence } from '../src/core/evidence.ts';
 import type { Runner } from '../src/core/exec.ts';
-import { evidenceBlock, evidenceMarkers, summarize, withEvidenceBlock } from '../src/core/publish.ts';
+import { evidenceBlock, evidenceMarkers, evidencePart, partsSection, summarize, withEvidenceBlock } from '../src/core/publish.ts';
 import { Secret } from '../specs/support/secret.ts';
 import { attach } from '../src/core/verbs.ts';
 import { newRunId } from '../specs/support/inputs.ts';
@@ -474,6 +474,9 @@ describe('attach', () => {
         '| Before | After |',
         '| :---: | :---: |',
         `| ${asset(2)} | ${asset(1)} |`,
+        '',
+        'Each video shows these parts, in order:',
+        '1. the change',
       ),
     );
     assert.deepEqual(gh.edits[0]!.attached, ['after video', 'before video']);
@@ -484,8 +487,18 @@ describe('attach', () => {
     const { deps, sealed } = checkout(gh);
     const { run } = sealed({ called: 'after' });
     await attach(deps, { verb: 'attach', run, pr: 9, media: flow, before: null });
-    assert.equal(gh.pr.body, block(`**Verified on an iOS simulator.** Run \`${run}\` on \`verify-ios-1\` at \`606639a63448\`, 1 of 1 passed.`, '', '| `video` |', '| :---: |', `| ${asset(1)} |`));
+    assert.equal(
+      gh.pr.body,
+      block(`**Verified on an iOS simulator.** Run \`${run}\` on \`verify-ios-1\` at \`606639a63448\`, 1 of 1 passed.`, '', '| `video` |', '| :---: |', `| ${asset(1)} |`, '', 'The video shows these parts, in order:', '1. the change'),
+    );
     assert.deepEqual(gh.edits[0]!.attached, ['after video']);
+  });
+
+  it('lists the parts of a video as one line each, with markup and line breaks taken out', () => {
+    assert.equal(evidencePart('  a <b>bold</b> `step`\nwith | pipes  '), 'a b bold /b step with pipes');
+    assert.equal(evidencePart('x'.repeat(250)).length, 200);
+    assert.deepEqual(partsSection([], true), []);
+    assert.deepEqual(partsSection(['one', 'two'], false), ['The video shows these parts, in order:\n1. one\n2. two']);
   });
 
   it('posts the part of each video that its run marked, cut by ffmpeg, and says how long each was and is', async () => {

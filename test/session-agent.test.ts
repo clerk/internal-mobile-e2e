@@ -690,7 +690,7 @@ describe('session agent', () => {
       const { before: _, ...versionOne } = { ...manifest, v: 1 };
       await assert.rejects(sendEvidence(session, versionOne as unknown as HandoffManifest, paths, (line) => void lines.push(line), 10), {
         code: 'NOT_READY',
-        message: 'the session refused the manifest of run r20261008-052713-253e: the manifest is version 1, and this session takes only version 2',
+        message: 'the session refused the manifest of run r20261008-052713-253e: the manifest is version 1, and this session takes only versions 2 and 3',
         fix: '{cli} down, then {cli} up, so that the session runs the verify code of this checkout, then {cli} run again and attach',
       });
       assert.equal(lines.length, 0, 'no file was sent');

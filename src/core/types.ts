@@ -198,6 +198,7 @@ export interface EvidenceBundle {
   readonly summary: EvidenceSummary;
   readonly files: readonly EvidenceFile[];
   readonly before: { readonly summary: EvidenceSummary; readonly files: readonly (EvidenceFile | null)[] } | null;
+  readonly parts?: readonly string[];
 }
 
 export const everyFile = <F extends object>(evidence: { readonly files: readonly F[]; readonly before: { readonly files: readonly (F | null)[] } | null }): readonly F[] => [

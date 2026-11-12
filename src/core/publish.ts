@@ -49,6 +49,12 @@ export const mediaList = (names: readonly string[], onDisk: readonly string[]): 
 
 const NEW_SCREEN = 'New screen';
 
+// A part's label comes from the spec's host.evidence call, so it is cut to one line of plain text before it goes into the description.
+export const evidencePart = (label: string): string => label.replace(/[\u0000-\u001f<>`|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
+
+export const partsSection = (parts: readonly string[], hasBefore: boolean): readonly string[] =>
+  parts.length === 0 ? [] : [[`${hasBefore ? 'Each video shows' : 'The video shows'} these parts, in order:`, ...parts.map((part, at) => `${at + 1}. ${part}`)].join('\n')];
+
 const beforeUploads = (files: readonly string[], hasBefore: readonly boolean[]): readonly (number | null)[] =>
   hasBefore.map((has, at) => (has ? files.length + hasBefore.slice(0, at).filter(Boolean).length : null));
 
@@ -153,7 +159,8 @@ export function chooseEvidence(pr: number, evidence: Publishable, before: Showab
   const video = media.kind === 'video' ? [evidence.videos[0] ?? missing(noVideo(evidence.run), '{cli} run a spec that calls host.launch, without --no-video, and attach that run, or attach this one with --screenshot <label>')] : [];
   const files = [...shots.map((shot) => shot.path), ...video].map((path) => ({ name: basename(path), path }));
   const summary = summarize(evidence);
-  if (before === null) return { pr, summary, files, before: null };
+  const parts = media.kind === 'video' ? (evidence.evidenceSpans ?? []).map((span) => evidencePart(span.label)).filter((part) => part !== '') : [];
+  if (before === null) return { pr, summary, files, before: null, parts };
   const newScreens = media.kind === 'screenshots' ? (media.newScreens ?? []) : [];
   const existing = newScreens.find((label) => before.screenshots.some((s) => s.label === label));
   if (existing !== undefined) {
@@ -186,7 +193,7 @@ export function chooseEvidence(pr: number, evidence: Publishable, before: Showab
     ),
     ...video.map(() => before.videos[0] ?? missing(noVideo(before.run), '{cli} run it again without --no-video, or attach without --video or without --before')),
   ];
-  return { pr, summary, files, before: { summary: summarize(before), files: was.map((path, at) => (path === null ? null : { name: `before-${files[at]!.name}`, path })) } };
+  return { pr, summary, files, before: { summary: summarize(before), files: was.map((path, at) => (path === null ? null : { name: `before-${files[at]!.name}`, path })) }, parts };
 }
 
 const UPLOADED = /https:\/\/github\.com\/user-attachments\/assets\/[0-9a-f-]{36}/g;
@@ -234,7 +241,8 @@ export async function postToPullRequest(bundle: EvidenceBundle, host: HostAdapte
   const onDisk = files.map((file, at) => `${prefix}-${at + 1}${extname(file.name)}`);
   const listed = evidenceBlock(summary, before, mediaList(files.map((file) => file.name), onDisk));
   const hasBefore = bundle.before === null ? null : bundle.before.files.map((file) => file !== null);
-  const laidOutWith = (uploaded: readonly string[]): string => evidenceBlock(summary, before, mediaTables(bundle.files.map((file) => file.name), hasBefore, uploaded));
+  const laidOutWith = (uploaded: readonly string[]): string =>
+    evidenceBlock(summary, before, [...mediaTables(bundle.files.map((file) => file.name), hasBefore, uploaded), ...partsSection(bundle.parts ?? [], hasBefore !== null)]);
 
   let current = await readDescription(runner, host.githubRepo, pr);
   const there = blockIn(current.body, platform);
